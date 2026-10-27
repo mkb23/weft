@@ -15,11 +15,11 @@ Every event has the same shape:
 | `seq` | the store | Position in this project's log. Strictly increasing, with no gaps that clients rely on |
 | `ts` | the store | UTC time the store accepted the event |
 | `actor` | the store | Who wrote it. With a server, it comes from the bearer token and never from the request body |
-| `verb` | the writer | One of the nine verbs below |
+| `verb` | the writer | One of the ten verbs below |
 | `task` | the writer | The task id. Can be null only for a `comment` addressed to everyone |
 | `body` | the writer | Verb-specific fields. Unknown fields are kept and ignored |
 
-## The nine verbs
+## The ten verbs
 
 | Verb | Body | Effect on the task |
 |---|---|---|
@@ -27,11 +27,12 @@ Every event has the same shape:
 | `update` | any of `title`, `refs`, `parent`, `await`, `data` | Fields are replaced, except `data`, which is merged key by key |
 | `link` | `rel`, `to` | Adds an edge. **Only `rel: "needs"` has meaning**: this task can't be ready until `to` is closed. Any other `rel` is a label |
 | `unlink` | `rel`, `to` | Removes that edge |
-| `claim` | `ttl` (seconds, default 3600), and optionally `status`, `progress` | A lease on the task until `ts + ttl`. Claiming again renews it, so a claim is also the holder's heartbeat. `status` is `working` (default), `waiting` (paused on something outside, keeping the claim) or `stuck` (needs help). `progress` is a free string. Both persist across renewals until changed. A new holder starts at `working` |
+| `claim` | `ttl` (seconds, default 3600), and optionally `status` | A lease on the task until `ts + ttl`. Claiming again renews it, so a claim is also the holder's heartbeat. `status` is `working` (default), `waiting` (paused on something outside, keeping the claim) or `stuck` (needs help). The status persists across renewals until changed. A new holder starts at `working` |
 | `release` | — | Ends the lease |
 | `close` | `reason` | The task is over. `reason` is a free word: *produced*, *abandoned*, *superseded*, *approved*, *no*… Ends any lease |
 | `reopen` | — | The task is open again |
 | `comment` | any of `text`, `to`, `re`, `data` | Says something. `to` addresses a task, an actor or a role, `re` is the `seq` being replied to, and `data` is free JSON |
+| `record` | `values`: `{name: value}`. Names match `[a-z][a-z0-9_.]*`, and values are numbers, strings or booleans | The task's `values` take the latest value per name. The history stays in the log. **weft never aggregates.** Anyone can record |
 
 ### Task fields
 
@@ -60,7 +61,7 @@ A fold is a pure function from events to a graph of tasks. From it:
 | State | When |
 |---|---|
 | **closed** | its latest close/reopen was a close |
-| **claimed** | it has a live lease. The lease carries `actor`, `until`, `status`, `progress` and `since` (when the status last changed) |
+| **claimed** | it has a live lease. The lease carries `actor`, `until`, `status` and `since` (when the status last changed) |
 | **blocked** | some task it `needs` isn't closed |
 | **awaiting** | it has an `await` and nothing else stops it |
 | **ready** | none of the above: anyone can claim it |
@@ -70,6 +71,7 @@ The states are checked in that order. **Any close reason satisfies `needs`.** A 
 Also derived on read:
 - **upstream**: everything a task needs, transitively.
 - **downstream**: everything that needs a task, transitively. This is what closing a gate would unblock.
+- **values**: the latest recorded value of each name.
 - **lapsed leases**: a lease is ignored once `until` has passed. There's no "lapsed" event.
 
 ## Storage
@@ -106,8 +108,9 @@ These are the shapes clients agree on. weft stores them but doesn't check them.
 | Where | Convention |
 |---|---|
 | `await` prefixes | `ask:<doc>#<id>` (a decision held elsewhere), `time:<ISO date>`, `cmd:<shell>`, `human:<what>` |
-| `comment.data` | `{"resume": "…"}` with a `release` (what to do when picked up again) · `{"spent_usd": 1.2}` · `{"progress": "60/100"}` · `{"artifact": "path/or/url"}` · `{"ephemeral": true}` (clients may skip it in summaries and exports) |
-| `task.data` | `{"cap_usd": …, "est_usd": …}` for budgets, and `{"billing": "…"}` for a spend ledger's code |
+| `comment.data` | `{"resume": "…"}` with a `release` (what to do when picked up again) · ``{"artifact": "path/or/url"}` · `{"ephemeral": true}` (clients may skip it in summaries and exports) |
+| `record` values | **Running totals, not increments** (`spend_usd=3.75`), so each record stands alone and rates come from the history. **Units in names:** `spend_usd`, `tokens`, `gpu_hours`, `progress` (0–1 or `"60/100"`) |
+| `task.data` | `{"budget": {"spend_usd": 20}}` sets a budget per recorded name, and `{"billing": "…"}` names a spend ledger's code |
 | `link` rels | `needs` (blocking) · `spawned_from` · `supersedes` · `informs` |
 
 ## Versioning

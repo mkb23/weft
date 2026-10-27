@@ -8,7 +8,7 @@ weft was made for **science**, which branches, gets reframed and goes quiet for 
 
 ## The model
 
-**Task:** `id` · `title` · `refs` (what it's about: docs, entities, URLs) · `parent` (grouping, never blocking) · `data` (free JSON, e.g. budgets) · `await` (optional, see gates)
+**Task:** `id` · `title` · `refs` (what it's about: docs, entities, URLs) · `parent` (grouping, never blocking) · `data` (free JSON, e.g. budgets) · `await` (optional, see gates) · `values` (the latest of whatever has been recorded against it, see below)
 
 **Edges:** `A needs B` means A can't be ready until B is **closed, for any reason**. Any other relation (`spawned_from`, `supersedes`, `informs`) is a label.
 
@@ -38,7 +38,8 @@ weft was made for **science**, which branches, gets reframed and goes quiet for 
 | `weft create "title" [--needs T] [--refs R] [--parent T] [--await W] [--data JSON] [--id ID]` | a new task (prints its id) |
 | `weft update T [--title …] [--refs …] [--parent …] [--await …] [--data …]` | change fields (`data` merges) |
 | `weft link T needs U` · `weft unlink T needs U` | add or remove an edge (any other rel is a label) |
-| `weft claim T [--ttl 2h] [--status working\|waiting\|stuck] [--progress P] [-m "…"]` | take a task. Claim again to renew and say how it's going. Status and progress persist until changed |
+| `weft claim T [--ttl 2h] [--status working\|waiting\|stuck] [-m "…"]` | take a task. Claim again to renew and say how it's going. The status persists until changed |
+| `weft record T NAME=VALUE …` | record values against a task: progress, spend, tokens… (see below) |
 | `weft release T [-m "resume: …"]` | let go without finishing, saying how to resume |
 | `weft close T --reason WORD [-m "…"]` · `weft reopen T` | finish (or give up) · undo |
 | `weft comment "…" [--on T] [--to WHO] [--re SEQ] [--data JSON]` | say something. It stays on the task for whoever comes next |
@@ -53,7 +54,7 @@ Add `--json` anywhere for machine-readable output. `weft COMMAND --help` gives e
 ```sh
 weft ready                                   # what can I do?
 weft claim t-3c9e01 --ttl 2h                 # it's mine
-weft claim t-3c9e01 --progress 50/100        # renew, and say how far
+weft record t-3c9e01 progress=0.5 spend_usd=1.80   # how far, how much
 weft claim t-3c9e01 --status stuck -m "results disagree with the simulation"
 weft close t-3c9e01 --reason produced -m "results in runs/arm3/summary.md"
 # or, if you must stop:
@@ -68,6 +69,18 @@ weft create "Run with the larger model" --needs t-9a0b1c
 - **Proceed** when there's a clear recommendation. Make a gate only when you need someone's say.
 - **Branch** with `create` plus `link NEW spawned_from OLD`. **Reframe** with `supersedes`, then close the old task as `superseded`. Abandoning is an honest outcome.
 - Put comments **on tasks**, not to people: a comment waits on its task, even for months.
+
+## Recording
+
+`weft record T progress=0.6 spend_usd=3.75 tokens=182000` stores timestamped values against a task. weft keeps the latest value of each name, which `weft show` displays, and the full history stays in the log. **weft never adds anything up:** sums, rates, roll-ups and budgets are for whoever reads the log (shirka draws them).
+
+Conventions, so that readers can chart without configuration:
+- **Record running totals**, not increments (`spend_usd=3.75`, not "+1.25"). Each record then stands alone, and rates come from the history.
+- **Put the unit in the name:** `spend_usd`, `tokens`, `gpu_hours`, `games`, `progress` (0–1, or a string like `60/100`).
+- **Anyone can record**, attributed: an agent its progress, an orchestrator its spend.
+- **Budgets** go in task data: `weft update T --data '{"budget": {"spend_usd": 20}}'`.
+
+A project that wants cost reporting just agrees on names. For example: `spend_usd` and `tokens` by the orchestrator, `progress` by the agent, `budget.spend_usd` on the parent task.
 
 ## Where the data lives
 

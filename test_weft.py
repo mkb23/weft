@@ -56,13 +56,23 @@ class Rules(Base):
         self.put(ev("create", "a", title="A"), ev("claim", "a"))
         lease = lambda: self.graph()["a"]["lease"]
         self.assertEqual(lease()["status"], "working")
-        self.put(ev("claim", "a", status="stuck", progress="3/10"))
+        self.put(ev("claim", "a", status="stuck"))
         since = lease()["since"]
-        self.put(ev("claim", "a", ttl=600))                  # a plain renewal keeps status, progress, since
-        self.assertEqual((lease()["status"], lease()["progress"], lease()["since"]), ("stuck", "3/10", since))
+        self.put(ev("claim", "a", ttl=600))                  # a plain renewal keeps the status and its since
+        self.assertEqual((lease()["status"], lease()["since"]), ("stuck", since))
         self.assertRaises(WeftError, self.put, ev("claim", "a", status="done"))
         self.assertRaises(WeftError, self.put, ev("claim", "a", status="working"), actor="bob")
-        self.assertIn("ann · stuck · 3/10", weft.summary(self.graph(), self.graph()["a"]))
+        self.assertIn("ann · stuck", weft.summary(self.graph(), self.graph()["a"]))
+
+    def test_record_keeps_latest_values_and_history(self):
+        self.put(ev("create", "a", title="A"))
+        self.put(ev("record", "a", values={"spend_usd": 1.25, "progress": "3/10"}), actor="overcode")
+        self.put(ev("record", "a", values={"spend_usd": 3.75}))
+        self.assertEqual(self.graph()["a"]["values"], {"spend_usd": 3.75, "progress": "3/10"})
+        self.assertEqual(len([e for e in self.store.read() if e["verb"] == "record"]), 2)
+        self.assertRaises(WeftError, self.put, ev("record", "a", values={}))
+        self.assertRaises(WeftError, self.put, ev("record", "a", values={"Bad Name": 1}))
+        self.assertRaises(WeftError, self.put, ev("record", "a", values={"x": [1, 2]}))
 
     def test_rule3_only_holder_releases_or_closes(self):
         self.put(ev("create", "a", title="A"), ev("claim", "a"))
@@ -177,12 +187,14 @@ class Cli(unittest.TestCase):
         self.run_("close", "q", "--reason", "decided", "-m", "Mike chose (d)")
         self.assertIn("g1", self.run_("ready", "--refs", "E6"))
         self.run_("claim", "g1", "--ttl", "2h")
+        self.run_("record", "g1", "spend_usd=0.5", "progress=1/4", "done=false")
+        self.assertIn("'spend_usd': 0.5, 'progress': '1/4', 'done': False", self.run_("show", "g1"))
         self.run_("release", "g1", "-m", "resume: start from the oracle")
         tasks = json.loads(self.run_("--json", "show"))
         self.assertEqual({t["id"]: t["state"] for t in tasks}, {"q": "closed", "g1": "ready"})
         lines = self.run_("watch", "--since", "0", "--down", "q", "--no-follow").splitlines()
         self.assertTrue(any("Mike chose (d)" in l for l in lines))
-        self.assertEqual(len(self.run_("export").splitlines()), 8)
+        self.assertEqual(len(self.run_("export").splitlines()), 9)
         self.assertEqual(Path(".weft/.gitignore").read_text(), "weft.db*\n")
 
     def test_errors_exit_cleanly(self):

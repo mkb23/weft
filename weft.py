@@ -10,10 +10,11 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERBS = ("create", "update", "link", "unlink", "claim", "release", "close", "reopen", "comment")
+VERBS = ("create", "update", "link", "unlink", "claim", "release", "close", "reopen", "comment", "record")
 FIELDS = ("title", "refs", "parent", "await", "data")
 DEFAULT_TTL = 3600
 CLAIM_STATUSES = ("working", "waiting", "stuck")
+KEY = re.compile(r"[a-z][a-z0-9_.]*")
 
 
 class WeftError(Exception):
@@ -41,7 +42,7 @@ def seconds(s):
 
 def blank(id):
     return {"id": id, "title": None, "refs": [], "parent": None, "await": None, "data": {},
-            "needs": [], "links": [], "closed": False, "reason": None, "lease": None, "comments": []}
+            "needs": [], "links": [], "closed": False, "reason": None, "lease": None, "comments": [], "values": {}}
 
 def apply(g, e):
     """Fold one (already checked) event into graph g, a dict of tasks by id."""
@@ -58,12 +59,11 @@ def apply(g, e):
             edges.append(edge)
         elif verb == "unlink":
             edges.remove(edge)
-    elif verb == "claim":   # a claim is also a heartbeat: status and progress persist until changed
+    elif verb == "claim":   # a claim is also a heartbeat: its status persists until changed
         until = parse_ts(e["ts"]) + timedelta(seconds=body.get("ttl", DEFAULT_TTL))
         old = t["lease"] if t["lease"] and t["lease"]["actor"] == e["actor"] else {}
         status = body.get("status") or old.get("status", "working")
         t["lease"] = {"actor": e["actor"], "until": stamp(until), "status": status,
-                      "progress": body.get("progress", old.get("progress")),
                       "since": old["since"] if old.get("status") == status else e["ts"]}
     elif verb == "release":
         t["lease"] = None
@@ -71,6 +71,8 @@ def apply(g, e):
         t.update(closed=True, reason=body.get("reason"), lease=None)
     elif verb == "reopen":
         t.update(closed=False, reason=None)
+    elif verb == "record":   # latest value per key; the history stays in the log
+        t["values"].update(body["values"])
     elif verb == "comment" and t:
         t["comments"].append({"seq": e.get("seq"), "ts": e["ts"], "actor": e["actor"], **body})
     return g
@@ -138,6 +140,12 @@ def check(g, e):
             raise WeftError(f"{id} has no {rel} link to {to}")
         if verb == "link" and rel == "needs" and id in upstream(g, to):      # rule 1
             raise WeftError(f"{id} needs {to} would make a cycle")
+    if verb == "record":
+        values = body.get("values")
+        if not values or not isinstance(values, dict) or not all(KEY.fullmatch(k) for k in values):
+            raise WeftError("record needs values: {name: value}, names like spend_usd or tokens")
+        if not all(isinstance(v, (int, float, str, bool)) for v in values.values()):
+            raise WeftError("recorded values must be numbers, strings or booleans")
     if verb in ("claim", "release", "close"):
         who = holder(t)
         if who and who != e["actor"]:                                         # rules 2 and 3
@@ -321,10 +329,20 @@ def server(root, host="127.0.0.1", port=7411):
 
 # ── the CLI ──────────────────────────────────────────────────────────────────
 
+def parse_value(pair):
+    name, eq, raw = pair.partition("=")
+    if not eq:
+        raise WeftError(f"expected NAME=VALUE, got {pair!r}")
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        value = raw
+    return name, value if isinstance(value, (int, float, str, bool)) else raw
+
 def summary(g, t):
     s = state(g, t)
     lease = t["lease"] or {}
-    claim = " · ".join(str(x) for x in (lease.get("actor"), lease.get("status"), lease.get("progress")) if x)
+    claim = " · ".join(x for x in (lease.get("actor"), lease.get("status")) if x)
     extra = {"closed": t["reason"], "claimed": claim,
              "blocked": " ".join(blockers(g, t)), "awaiting": t["await"]}.get(s)
     return f"{t['id']:<10} {s:<9} {t['title']}" + (f"  ({extra})" if extra else "")
@@ -350,6 +368,7 @@ A project is an append-only log of events about TASKS. Everything you see
 (ready, blocked, who holds what) is computed from that log.
 
 TASK      id · title · refs (what it's about) · parent (grouping) · data (JSON)
+          values (latest of what's been recorded: progress, spend_usd, tokens…)
           await (makes it a GATE: waits on something outside weft; whoever
           can tell it has happened closes it, weft never checks)
 EDGES     A needs B   A can't be ready until B is closed (any close reason)
@@ -367,7 +386,8 @@ AGENT LOOP
   weft ready                          what can I do?
   weft claim T                        it's mine (renew by claiming again)
   weft claim T --status stuck -m "…"  report how it's going: working·waiting·stuck
-  weft comment "…" --on T             progress, findings, questions
+  weft record T progress=0.6 spend_usd=3.75   how far, how much (running totals)
+  weft comment "…" --on T             findings, questions
   weft close T --reason produced      done for now (or abandoned, superseded…)
   weft release T -m "resume: …"       stop without finishing; say how to resume
   weft create "…" --needs G           new work that waits on G
@@ -425,7 +445,6 @@ def main(argv=None):
     c.add_argument("--status", choices=CLAIM_STATUSES,
                    help="working (default) · waiting: paused on something outside, keeping the claim · "
                         "stuck: needs help. Kept until you change it")
-    c.add_argument("--progress", help="free-form, e.g. 60/100 or 'analysis half done'. Kept until changed")
     c.add_argument("-m", "--message", help="comment first (what's happening)")
     c = cmd("release", "let go of a claim without closing; leave a resume note with -m",
             'weft release t-1a2b3c -m "resume: oracle done, start the observer"')
@@ -445,6 +464,11 @@ def main(argv=None):
     c.add_argument("--re", type=int, metavar="SEQ", help="the event it replies to")
     c.add_argument("--data", type=json.loads, metavar="JSON", help="structured payload")
 
+    c = cmd("record", "record values against a task: progress, spend, tokens… (weft stores them, never adds them up)",
+            "weft record t-1a2b3c progress=0.6 spend_usd=3.75 tokens=182000\n"
+            "  # record running totals, units in the name; the latest value per name shows in `weft show`")
+    c.add_argument("task"); c.add_argument("values", nargs="+", metavar="NAME=VALUE")
+    c.add_argument("-m", "--message", help="comment first")
     c = cmd("ready", "list tasks nobody holds whose needs are all closed", "weft ready --refs H2")
     c.add_argument("--refs", metavar="REF", help="only tasks that refer to REF")
     c.add_argument("--parent", metavar="TASK", help="only tasks grouped under TASK")
@@ -534,8 +558,10 @@ def run(a):
     elif a.cmd in ("link", "unlink"):
         events = [{"verb": a.cmd, "task": id, "body": {"rel": a.rel, "to": a.to}}]
     elif a.cmd == "claim":
-        body = {"ttl": seconds(a.ttl), "status": a.status, "progress": a.progress}
+        body = {"ttl": seconds(a.ttl), "status": a.status}
         events = [{"verb": "claim", "task": id, "body": {k: v for k, v in body.items() if v is not None}}]
+    elif a.cmd == "record":
+        events = [{"verb": "record", "task": id, "body": {"values": dict(parse_value(v) for v in a.values)}}]
     elif a.cmd == "comment":
         body = {k: v for k, v in (("text", a.text), ("to", a.to), ("re", a.re), ("data", a.data)) if v is not None}
         events = [{"verb": "comment", "task": id, "body": body}]
