@@ -110,9 +110,12 @@ Types: `number` · `integer` · `string` · `boolean`. A definition applies to r
 **Many boxes:** one box holds a project's store, and agents there use the file directly, with no server needed. Other boxes go through `weft serve DIR`. It serves `DIR/<project>.db`, and beyond localhost it needs `DIR/tokens`, one `<token> <actor>` per line.
 
 ```sh
-export WEFT=http://master:7411/myproject WEFT_TOKEN=…
+weft init --url https://master:7411/myproject     # writes .weft/url (not a secret: commit it)
+echo "https://master:7411/ <your-token>" >> ~/.config/weft/tokens && chmod 600 ~/.config/weft/tokens
 weft watch --since 0          # replay everything, then follow live
 ```
+
+The token decides who you are on the server, so give each agent its own. weft reads it from `$WEFT_TOKEN`, or from `~/.config/weft/tokens` (lines of `<url-prefix> <token>`; the longest prefix wins). The file is the easy route for agents whose shell doesn't keep environment variables between commands.
 
 `weft export > .weft/events.jsonl` keeps the whole history next to the work, and `weft import` rebuilds a store from it.
 

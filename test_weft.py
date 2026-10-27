@@ -405,6 +405,17 @@ class Cli(unittest.TestCase):
         self.assertIn("already has a store", self.fails("init"))
 
 
+class Tokens(unittest.TestCase):
+    def test_saved_token_longest_prefix_wins(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d, "tokens")
+            f.write_text("# url-prefix token\nhttps://box:7411/ general\nhttps://box:7411/proj specific\nbroken\n")
+            with mock.patch.dict(os.environ, {"WEFT_TOKENS": str(f)}):
+                self.assertEqual(weft.saved_token("https://box:7411/proj/events"), "specific")
+                self.assertEqual(weft.saved_token("https://box:7411/other"), "general")
+                self.assertIsNone(weft.saved_token("https://elsewhere"))
+
+
 class Worktrees(unittest.TestCase):
     """A repo's worktrees and subdirectories share the store at its main checkout."""
     def test_worktree_finds_the_main_store(self):

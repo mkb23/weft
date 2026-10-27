@@ -374,8 +374,17 @@ def open_store():
     if not target:
         raise WeftError("no weft here: run `weft init`, or set WEFT to a db path or a server URL")
     if target.startswith(("http://", "https://")):
-        return Remote(target, os.environ.get("WEFT_TOKEN"))
+        return Remote(target, os.environ.get("WEFT_TOKEN") or saved_token(target))
     return Local(target)
+
+def saved_token(url):
+    """The token for `url` from ~/.config/weft/tokens: lines of "<url-prefix> <token>", longest prefix wins."""
+    path = Path(os.environ.get("WEFT_TOKENS", Path.home() / ".config" / "weft" / "tokens"))
+    if not path.exists():
+        return None
+    matches = [line.split()[:2] for line in path.read_text().splitlines()
+               if len(line.split()) >= 2 and not line.startswith("#") and url.startswith(line.split()[0])]
+    return max(matches, key=lambda m: len(m[0]))[1] if matches else None
 
 
 # ── the server: POST /<project>/events, GET /<project>/events?since=N[&follow=1]
@@ -561,7 +570,8 @@ AGENT LOOP
 
 YOU       set WEFT_ACTOR to your own name; agents sharing a name share claims.
 STORE     $WEFT (db path or server URL), else the nearest .weft/ upward, else
-          the repo's main checkout. $WEFT_TOKEN authenticates to a server.
+          the repo's main checkout. A server's token: $WEFT_TOKEN, else the
+          line "<url-prefix> <token>" in ~/.config/weft/tokens (keep it 600).
 OUTPUT    add --json anywhere: results and errors become JSON.
 """
 

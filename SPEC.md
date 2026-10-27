@@ -117,7 +117,7 @@ There's **one store per project**, on one box (the master).
 
 **Clocks:** the rules judge every event at its own `ts`: now for a live write, and the original time for an import, so an export always re-imports. When *reading*, a lease's state is computed with the reader's clock. The master's clock is the one that enforces the rules, so a remote reader with a skewed clock may *show* a different state but can't *break* a rule.
 
-**Finding the store** (CLI): `$WEFT` (a db path or a server URL); otherwise the nearest `.weft/` (holding `weft.db` or `url`) walking up from the current directory; otherwise the one at the git repo's main checkout. Worktrees and clones' subdirectories therefore share one store, and `weft init` refuses to make a second one. `$WEFT_TOKEN` holds the bearer token. **`$WEFT_ACTOR` names you, and every agent should set its own**: agents sharing an actor share claims. The default is `user@host`.
+**Finding the store** (CLI): `$WEFT` (a db path or a server URL); otherwise the nearest `.weft/` (holding `weft.db` or `url`) walking up from the current directory; otherwise the one at the git repo's main checkout. Worktrees and clones' subdirectories therefore share one store, and `weft init` refuses to make a second one. The bearer token comes from `$WEFT_TOKEN`, else `~/.config/weft/tokens` (`$WEFT_TOKENS` overrides the path): lines of `<url-prefix> <token>`, longest matching prefix wins. **`$WEFT_ACTOR` names you, and every agent should set its own**: agents sharing an actor share claims. The default is `user@host`.
 
 ## Conventions (not rules)
 

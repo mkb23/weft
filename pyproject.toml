@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "weft"
-version = "0.1.0"
+version = "0.2.1"
 description = "A tiny shared work graph for agents and the people they work with"
 readme = "README.md"
 license = {text = "MIT"}
