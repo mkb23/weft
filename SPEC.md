@@ -130,7 +130,7 @@ Shapes that clients agree on. weft stores them but doesn't check them.
 | `comment.data` | `{"resume": "…"}` with a `release` (what to do when it's picked up again) · `{"artifact": "path/or/url"}` · `{"ephemeral": true}` (clients may skip it) |
 | `record` names | **Running totals, not increments** (`spend_usd=3.75`), so each record stands alone and rates come from the history. **Units in names:** `spend_usd`, `tokens`, `gpu_hours`. **`progress` is a number from 0 to 1.** Record cost and progress, **never results**: results belong in documents |
 | `task.data` | `{"budget": {"spend_usd": 20}}` sets a budget per recorded name, and `{"billing": "…"}` names a spend ledger's code |
-| `link` rels | `needs` (blocking) · `spawned_from` · `supersedes` · `informs` |
+| `link` rels | `needs` (blocking) · `informs` (a soft input: "proceeding unless this gate steers us"; it never blocks) · `spawned_from` · `supersedes` |
 
 ## Versioning
 

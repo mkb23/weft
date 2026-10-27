@@ -78,6 +78,7 @@ weft create "Sweep finishes" --await "cmd:test -f runs/sweep/done" --id sweep-do
 **Use it well:**
 - A task is **an action one agent session could do**. Hypotheses, findings and experiments are not tasks: point at them with `--refs`. Don't create tasks in advance for candidate experiments; they stay prose until someone picks them up.
 - **Proceed** when there's a clear recommendation. Make a gate only when you need someone's say.
+- **Soft input** ("I'll proceed unless Mike steers"): make the gate, then `link WORK informs GATE` rather than `needs`. The work stays ready, and the gate's `show` lists what it would steer.
 - **Defer** by adding an `await` (`weft update T --await ask:ROADMAP.md#later`), not by closing.
 - **Branch** with `create` plus `link NEW spawned_from OLD`. **Reframe** with `close OLD --superseded-by NEW`. Abandoning is an honest outcome.
 - Put comments **on tasks**, not to people: a comment waits on its task, even for months.
