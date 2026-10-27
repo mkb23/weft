@@ -98,6 +98,51 @@ class Rules(Base):
         self.assertRaises(WeftError, self.put, ev("unlink", "b", rel="needs", to="a"))
 
 
+class Types(Base):
+    def setUp(self):
+        super().setUp()
+        self.put(ev("create", "a", title="A"))
+
+    def rec(self, actor="ann", **values):
+        return self.put(ev("record", "a", values=values), actor=actor)
+
+    def test_first_use_fixes_the_type(self):
+        self.rec(spend_usd=1.25)
+        self.rec(spend_usd=3)                       # integers are numbers too
+        with self.assertRaisesRegex(WeftError, "spend_usd is number, got \"3.75\\$\""):
+            self.rec(spend_usd="3.75$", actor="sloppy")
+        self.assertEqual(self.graph().names["spend_usd"], {"type": "number", "by": "first use"})
+
+    def test_define_enforces_type_range_and_choices(self):
+        self.put(ev("define", None, name="progress", type="number", min=0, max=1),
+                 ev("define", None, name="phase", type="string", one_of=["build", "run"]),
+                 ev("define", None, name="games", type="integer", unit="games"))
+        self.rec(progress=0.6, phase="run", games=60)
+        for bad in ({"progress": 1.5}, {"progress": "60%"}, {"phase": "dance"}, {"games": 6.5}, {"games": True}):
+            self.assertRaises(WeftError, self.rec, **bad)
+
+    def test_define_overrides_first_use_going_forward(self):
+        self.rec(progress="3/10")                   # an early string…
+        self.put(ev("define", None, name="progress", type="number", min=0, max=1))
+        self.rec(progress=0.3)                      # …then the project decides
+        self.assertRaises(WeftError, self.rec, progress="4/10")
+        self.assertEqual(self.graph()["a"]["values"]["progress"], 0.3)
+
+    def test_strict_refuses_undefined_names(self):
+        self.put(ev("define", None, strict=True))
+        self.assertRaisesRegex(WeftError, "isn't defined", self.rec, tokens=10)
+        self.put(ev("define", None, name="tokens", type="integer"))
+        self.rec(tokens=10)
+        self.put(ev("define", None, strict=False))
+        self.rec(anything="goes")
+
+    def test_bad_definitions_refused(self):
+        for body in ({}, {"name": "x"}, {"name": "x", "type": "date"}, {"name": "Bad", "type": "number"},
+                     {"name": "x", "type": "number", "min": "0"}, {"name": "x", "type": "string", "one_of": []},
+                     {"strict": "yes"}):
+            self.assertRaises(WeftError, self.put, ev("define", None, **body))
+
+
 class Derived(Base):
     def test_states_and_unblocking(self):
         self.put(ev("create", "d21", title="Approve the proxy arm", **{"await": "ask:DECISIONS.md#D21"}),
@@ -196,6 +241,18 @@ class Cli(unittest.TestCase):
         self.assertTrue(any("Mike chose (d)" in l for l in lines))
         self.assertEqual(len(self.run_("export").splitlines()), 9)
         self.assertEqual(Path(".weft/.gitignore").read_text(), "weft.db*\n")
+
+    def test_define_and_names(self):
+        self.run_("define", "spend_usd", "number", "--min", "0", "--unit", "USD", "-d", "cumulative spend")
+        self.run_("define", "phase", "string", "--one-of", "build,run")
+        self.run_("create", "x", "--id", "x")
+        self.run_("record", "x", "phase=run", "tokens=5")
+        names = self.run_("names")
+        self.assertIn("number ≥ 0 (USD)  [define]  cumulative spend", names)
+        self.assertIn("tokens", names)
+        with self.assertRaises(SystemExit) as caught:
+            self.run_("record", "x", "phase=dance")
+        self.assertIn("phase is string one of build, run", str(caught.exception))
 
     def test_errors_exit_cleanly(self):
         with self.assertRaises(SystemExit) as caught:

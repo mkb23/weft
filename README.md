@@ -40,6 +40,7 @@ weft was made for **science**, which branches, gets reframed and goes quiet for 
 | `weft link T needs U` · `weft unlink T needs U` | add or remove an edge (any other rel is a label) |
 | `weft claim T [--ttl 2h] [--status working\|waiting\|stuck] [-m "…"]` | take a task. Claim again to renew and say how it's going. The status persists until changed |
 | `weft record T NAME=VALUE …` | record values against a task: progress, spend, tokens… (see below) |
+| `weft define NAME TYPE [--min] [--max] [--one-of] [--unit] [-d]` · `weft define --strict` · `weft names` | type what the project records · refuse undefined names · list them |
 | `weft release T [-m "resume: …"]` | let go without finishing, saying how to resume |
 | `weft close T --reason WORD [-m "…"]` · `weft reopen T` | finish (or give up) · undo |
 | `weft comment "…" [--on T] [--to WHO] [--re SEQ] [--data JSON]` | say something. It stays on the task for whoever comes next |
@@ -80,7 +81,19 @@ Conventions, so that readers can chart without configuration:
 - **Anyone can record**, attributed: an agent its progress, an orchestrator its spend.
 - **Budgets** go in task data: `weft update T --data '{"budget": {"spend_usd": 20}}'`.
 
-A project that wants cost reporting just agrees on names. For example: `spend_usd` and `tokens` by the orchestrator, `progress` by the agent, `budget.spend_usd` on the parent task.
+**Types are enforced on write, for every agent on every box.** A name nobody has defined takes the type of its first use, so `spend_usd=1.25` then `spend_usd="3.75$"` is refused. A project can be precise with `define`:
+
+```sh
+weft define spend_usd number --min 0 --unit USD -d "cumulative spend, recorded by the orchestrator"
+weft define progress number --min 0 --max 1
+weft define phase string --one-of design,build,run,analyse
+weft define --strict           # optional: refuse names nobody has defined
+weft names                     # the project's vocabulary; agents should read this first
+```
+
+Types: `number` · `integer` · `string` · `boolean`. A definition applies to records from then on, and never rewrites history. Task `data` stays free JSON.
+
+A project that wants cost reporting just agrees on names, and defines them. For example: `spend_usd` and `tokens` by the orchestrator, `progress` by the agent, `budget.spend_usd` on the parent task.
 
 ## Where the data lives
 

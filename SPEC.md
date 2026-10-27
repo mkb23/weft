@@ -15,11 +15,11 @@ Every event has the same shape:
 | `seq` | the store | Position in this project's log. Strictly increasing, with no gaps that clients rely on |
 | `ts` | the store | UTC time the store accepted the event |
 | `actor` | the store | Who wrote it. With a server, it comes from the bearer token and never from the request body |
-| `verb` | the writer | One of the ten verbs below |
+| `verb` | the writer | One of the eleven verbs below |
 | `task` | the writer | The task id. Can be null only for a `comment` addressed to everyone |
 | `body` | the writer | Verb-specific fields. Unknown fields are kept and ignored |
 
-## The ten verbs
+## The eleven verbs
 
 | Verb | Body | Effect on the task |
 |---|---|---|
@@ -33,6 +33,7 @@ Every event has the same shape:
 | `reopen` | — | The task is open again |
 | `comment` | any of `text`, `to`, `re`, `data` | Says something. `to` addresses a task, an actor or a role, `re` is the `seq` being replied to, and `data` is free JSON |
 | `record` | `values`: `{name: value}`. Names match `[a-z][a-z0-9_.]*`, and values are numbers, strings or booleans | The task's `values` take the latest value per name. The history stays in the log. **weft never aggregates.** Anyone can record |
+| `define` | `name` and `type` (`number`, `integer`, `string` or `boolean`), and optionally `min`, `max`, `one_of`, `unit`, `description`; and/or `strict` (a boolean). `task` is null | Declares the type of a recorded name, or replaces its declaration. `strict: true` refuses names nobody has defined. It applies to later records only |
 
 ### Task fields
 
@@ -51,6 +52,8 @@ A store applies each batch of events in one transaction. It checks every event a
 1. **No cycles in `needs`.** `link A needs B` is refused if `A` is already upstream of `B`, or if `A = B`.
 2. **One live claim.** A `claim` is refused while a lease held by someone else is live (`now < until`). A closed task can't be claimed.
 3. **Only the holder lets go.** While a lease is live, only its holder can `release` or `close` the task.
+
+**Types.** Every recorded value is checked against its name's type: its `define`, or else the type of the name's first recorded use (`number`, `string` or `boolean`). Integers count as numbers. A value outside `min`/`max` or not in `one_of` is refused. Under `strict`, so is a name with no `define`. Errors name the expected type, so a writer can correct itself (`progress is number ≥ 0 ≤ 1, got "60%"`).
 
 There is also basic validation: a claim `status` must be `working`, `waiting` or `stuck`; `create` needs a title and a fresh id; every other verb needs an existing task (except a `comment` with no task); `link` needs an existing target; and `unlink` needs an existing edge.
 
@@ -72,6 +75,7 @@ Also derived on read:
 - **upstream**: everything a task needs, transitively.
 - **downstream**: everything that needs a task, transitively. This is what closing a gate would unblock.
 - **values**: the latest recorded value of each name.
+- **names**: each recorded name's type (defined, or from its first use), plus whether the project is strict.
 - **lapsed leases**: a lease is ignored once `until` has passed. There's no "lapsed" event.
 
 ## Storage

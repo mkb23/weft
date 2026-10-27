@@ -10,7 +10,10 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERBS = ("create", "update", "link", "unlink", "claim", "release", "close", "reopen", "comment", "record")
+VERBS = ("create", "update", "link", "unlink", "claim", "release", "close", "reopen", "comment", "record", "define")
+TYPES = {"number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+         "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+         "string": lambda v: isinstance(v, str), "boolean": lambda v: isinstance(v, bool)}
 FIELDS = ("title", "refs", "parent", "await", "data")
 DEFAULT_TTL = 3600
 CLAIM_STATUSES = ("working", "waiting", "stuck")
@@ -39,6 +42,15 @@ def seconds(s):
 
 
 # ── the fold: events → graph ─────────────────────────────────────────────────
+
+class Graph(dict):
+    """Tasks by id, plus the project's recorded-value names and whether undefined names are refused."""
+    def __init__(self):
+        super().__init__()
+        self.names, self.strict = {}, False
+
+def type_of(v):
+    return "boolean" if isinstance(v, bool) else "number" if isinstance(v, (int, float)) else "string"
 
 def blank(id):
     return {"id": id, "title": None, "refs": [], "parent": None, "await": None, "data": {},
@@ -71,14 +83,21 @@ def apply(g, e):
         t.update(closed=True, reason=body.get("reason"), lease=None)
     elif verb == "reopen":
         t.update(closed=False, reason=None)
-    elif verb == "record":   # latest value per key; the history stays in the log
+    elif verb == "record":   # latest value per name; the history stays in the log
         t["values"].update(body["values"])
+        for k, v in body["values"].items():   # an undefined name takes the type of its first use
+            g.names.setdefault(k, {"type": type_of(v), "by": "first use"})
+    elif verb == "define":
+        if "name" in body:
+            g.names[body["name"]] = {k: v for k, v in body.items() if k != "name"} | {"by": "define"}
+        if "strict" in body:
+            g.strict = body["strict"]
     elif verb == "comment" and t:
         t["comments"].append({"seq": e.get("seq"), "ts": e["ts"], "actor": e["actor"], **body})
     return g
 
 def fold(events, g=None):
-    g = {} if g is None else g
+    g = Graph() if g is None else g
     for e in events:
         apply(g, e)
     return g
@@ -128,6 +147,8 @@ def check(g, e):
         if not body.get("title"):
             raise WeftError("a new task needs a title")
         return
+    if verb == "define":
+        return check_define(body)
     if verb == "comment" and id is None:
         return
     if not t:
@@ -144,8 +165,8 @@ def check(g, e):
         values = body.get("values")
         if not values or not isinstance(values, dict) or not all(KEY.fullmatch(k) for k in values):
             raise WeftError("record needs values: {name: value}, names like spend_usd or tokens")
-        if not all(isinstance(v, (int, float, str, bool)) for v in values.values()):
-            raise WeftError("recorded values must be numbers, strings or booleans")
+        for k, v in values.items():
+            check_value(g, k, v)
     if verb in ("claim", "release", "close"):
         who = holder(t)
         if who and who != e["actor"]:                                         # rules 2 and 3
@@ -154,6 +175,45 @@ def check(g, e):
             raise WeftError(f"claim status must be one of {', '.join(CLAIM_STATUSES)}")
         if verb == "claim" and t["closed"]:
             raise WeftError(f"{id} is closed ({t['reason']})")
+
+
+def describe(name, d):
+    bits = [d["type"]]
+    if "min" in d:
+        bits.append(f"≥ {d['min']:g}")
+    if "max" in d:
+        bits.append(f"≤ {d['max']:g}")
+    if "one_of" in d:
+        bits.append("one of " + ", ".join(map(str, d["one_of"])))
+    if "unit" in d:
+        bits.append(f"({d['unit']})")
+    return f"{name} is {' '.join(bits)}"
+
+def check_value(g, k, v):
+    d = g.names.get(k)
+    if not TYPES["number"](v) and not isinstance(v, (str, bool)):
+        raise WeftError(f"{k}: recorded values must be numbers, strings or booleans")
+    if d is None:
+        if g.strict:
+            raise WeftError(f"{k} isn't defined, and this project only accepts defined names (see `weft names`)")
+        return
+    ok = TYPES[d["type"]](v) and ("one_of" not in d or v in d["one_of"])
+    ok = ok and not (TYPES["number"](v) and (v < d.get("min", v) or v > d.get("max", v)))
+    if not ok:
+        raise WeftError(f"{describe(k, d)}, got {json.dumps(v)} (see `weft names`)")
+
+def check_define(body):
+    if "name" not in body and "strict" not in body:
+        raise WeftError("define needs a name and a type, or strict")
+    if "strict" in body and not isinstance(body["strict"], bool):
+        raise WeftError("strict must be true or false")
+    if "name" in body:
+        if not KEY.fullmatch(body["name"]) or body.get("type") not in TYPES:
+            raise WeftError(f"define needs a name like spend_usd and a type: {', '.join(TYPES)}")
+        if any(k in body and not TYPES["number"](body[k]) for k in ("min", "max")):
+            raise WeftError("min and max must be numbers")
+        if "one_of" in body and not (isinstance(body["one_of"], list) and body["one_of"]):
+            raise WeftError("one_of must be a non-empty list")
 
 
 # ── stores: a local SQLite file, or a remote server ──────────────────────────
@@ -387,6 +447,7 @@ AGENT LOOP
   weft claim T                        it's mine (renew by claiming again)
   weft claim T --status stuck -m "…"  report how it's going: working·waiting·stuck
   weft record T progress=0.6 spend_usd=3.75   how far, how much (running totals)
+  weft names                          what this project records, and the types
   weft comment "…" --on T             findings, questions
   weft close T --reason produced      done for now (or abandoned, superseded…)
   weft release T -m "resume: …"       stop without finishing; say how to resume
@@ -469,6 +530,19 @@ def main(argv=None):
             "  # record running totals, units in the name; the latest value per name shows in `weft show`")
     c.add_argument("task"); c.add_argument("values", nargs="+", metavar="NAME=VALUE")
     c.add_argument("-m", "--message", help="comment first")
+    c = cmd("define", "declare a recorded name's type (and range, choices, unit); or make the project --strict",
+            'weft define spend_usd number --min 0 --unit USD -d "cumulative spend"\n'
+            "  weft define phase string --one-of design,build,run,analyse\n"
+            "  weft define --strict      # refuse names nobody has defined (--open undoes it)\n"
+            "  # undefined names take the type of their first use")
+    c.add_argument("name", nargs="?"); c.add_argument("type", nargs="?", choices=TYPES)
+    c.add_argument("--min", type=float); c.add_argument("--max", type=float)
+    c.add_argument("--one-of", metavar="A,B,…", help="the only allowed values")
+    c.add_argument("--unit"); c.add_argument("-d", "--description")
+    c.add_argument("--strict", action="store_const", const=True, help="refuse undefined names")
+    c.add_argument("--open", dest="strict", action="store_const", const=False, help="accept undefined names again")
+    cmd("names", "list what this project records: each name's type, range, unit and description",
+        "weft names")
     c = cmd("ready", "list tasks nobody holds whose needs are all closed", "weft ready --refs H2")
     c.add_argument("--refs", metavar="REF", help="only tasks that refer to REF")
     c.add_argument("--parent", metavar="TASK", help="only tasks grouped under TASK")
@@ -533,6 +607,12 @@ def run(a):
                 out(e, f"{e['seq']:>5} {e['ts']} {e['actor']:<16} {e['verb']:<8} {e['task'] or '-':<10} {body}")
                 sys.stdout.flush()
         return
+    if a.cmd == "names":
+        g = fold(store.read())
+        lines = [f"{k:<16} {describe(k, d).split(' is ', 1)[1]}  [{d['by']}]" + (f"  {d['description']}" if "description" in d else "")
+                 for k, d in sorted(g.names.items())]
+        return out({"strict": g.strict, "names": g.names},
+                   "\n".join(lines + [f"(strict: undefined names are refused)"] * g.strict))
     if a.cmd in ("ready", "show"):
         g = fold(store.read())
         if a.cmd == "show" and a.task:
@@ -549,7 +629,7 @@ def run(a):
         return out([dict(t, state=state(g, t)) for t in ts], "\n".join(summary(g, t) for t in ts))
 
     # everything else writes events
-    id = a.task if a.cmd != "create" else (a.id or f"t-{secrets.token_hex(3)}")
+    id = getattr(a, "task", None) if a.cmd != "create" else (a.id or f"t-{secrets.token_hex(3)}")
     if a.cmd in ("create", "update"):
         body = {k: v for k, v in (("title", a.title), ("refs", a.refs), ("parent", a.parent),
                                   ("await", a.await_), ("data", a.data)) if v is not None}
@@ -560,6 +640,12 @@ def run(a):
     elif a.cmd == "claim":
         body = {"ttl": seconds(a.ttl), "status": a.status}
         events = [{"verb": "claim", "task": id, "body": {k: v for k, v in body.items() if v is not None}}]
+    elif a.cmd == "define":
+        one_of = a.one_of and [parse_value(f"x={v}")[1] for v in a.one_of.split(",")]
+        body = {k: v for k, v in (("name", a.name), ("type", a.type), ("min", a.min), ("max", a.max),
+                                  ("one_of", one_of), ("unit", a.unit), ("description", a.description),
+                                  ("strict", a.strict)) if v is not None}
+        events = [{"verb": "define", "task": None, "body": body}]
     elif a.cmd == "record":
         events = [{"verb": "record", "task": id, "body": {"values": dict(parse_value(v) for v in a.values)}}]
     elif a.cmd == "comment":
