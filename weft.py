@@ -97,9 +97,10 @@ def fold(events, g=None):
         apply(g, e)
     return g
 
-def holder(t):
+def holder(t, at=None):
+    """Who holds t's live claim at time `at` (default: now)."""
     lease = t["lease"]
-    return lease["actor"] if lease and parse_ts(lease["until"]) > now() else None
+    return lease["actor"] if lease and parse_ts(lease["until"]) > (at or now()) else None
 
 def children(g, id):
     return [y for y in g if g[y]["parent"] == id]
@@ -108,10 +109,10 @@ def blockers(g, t):
     """What stops t: needs that aren't closed, and (for a group) children that aren't."""
     return [x for x in t["needs"] + children(g, t["id"]) if not g[x]["closed"]]
 
-def state(g, t):
+def state(g, t, at=None):
     if t["closed"]:
         return "closed"
-    if holder(t):
+    if holder(t, at):
         return "claimed"
     if blockers(g, t):
         return "blocked"
@@ -137,6 +138,10 @@ def downstream(g, id):
 
 def check(g, e):
     verb, body, id, who = e.get("verb"), e.get("body"), e.get("task"), e.get("actor")
+    try:   # every event is judged at its own time: now for a live write, then for an import
+        at = parse_ts(e["ts"])
+    except (KeyError, TypeError, ValueError):
+        raise WeftError("an event needs a ts like 2026-10-27T21:40:00Z")
     if verb not in VERBS:
         raise WeftError(f"unknown verb: {verb!r}; verbs are {', '.join(VERBS)}")
     if not isinstance(body, dict):
@@ -177,18 +182,18 @@ def check(g, e):
             raise WeftError("ttl must be between 1 second and 7 days")
         if body.get("status", "working") not in CLAIM_STATUSES:
             raise WeftError(f"claim status must be one of {', '.join(CLAIM_STATUSES)}")
-        if holder(t) != who:                                                       # rule 2: renew, or claim a ready task
-            if holder(t):
-                raise WeftError(f"{id} is claimed by {holder(t)} until {t['lease']['until']}")
-            if state(g, t) != "ready":
+        if holder(t, at) != who:                                                       # rule 2: renew, or claim a ready task
+            if holder(t, at):
+                raise WeftError(f"{id} is claimed by {holder(t, at)} until {t['lease']['until']}")
+            if state(g, t, at) != "ready":
                 why = {"closed": f"it's closed ({t['reason']})", "awaiting": "it's a gate: whoever can tell, closes it",
-                       "blocked": f"it's blocked by {' '.join(blockers(g, t))}"}[state(g, t)]
+                       "blocked": f"it's blocked by {' '.join(blockers(g, t))}"}[state(g, t, at)]
                 raise WeftError(f"can't claim {id}: {why}")
     elif verb in ("release", "close"):
-        if holder(t) and holder(t) != who and not (verb == "release" and body.get("force")):   # rule 3
-            raise WeftError(f"{id} is claimed by {holder(t)} until {t['lease']['until']}"
+        if holder(t, at) and holder(t, at) != who and not (verb == "release" and body.get("force")):   # rule 3
+            raise WeftError(f"{id} is claimed by {holder(t, at)} until {t['lease']['until']}"
                             + (" (a stuck or vanished holder can be released with --force)" if verb == "release" else ""))
-        if verb == "release" and not holder(t):
+        if verb == "release" and not holder(t, at):
             raise WeftError(f"{id} isn't claimed")
         if verb == "close" and t["closed"]:
             raise WeftError(f"{id} is already closed ({t['reason']}); reopen it first")

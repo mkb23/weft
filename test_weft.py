@@ -259,6 +259,18 @@ class Store(Base):
         self.assertEqual(other.read(), self.store.read())
         self.assertRaisesRegex(WeftError, "empty store", other.load, self.store.read())
 
+    def test_import_judges_each_event_at_its_own_time(self):
+        # a claim released long ago, and a takeover after a lapse, must both survive a round trip
+        self.tasks("a")
+        self.put(ev("claim", "a", ttl=60), ev("release", "a"), ev("claim", "a", ttl=60))
+        with later(minutes=5):
+            self.put(ev("claim", "a"), actor="bob")   # ann's claim had lapsed
+            exported = self.store.read()
+        with later(days=30):
+            other = Local(Path(self.dir.name) / "q.db")
+            other.load(exported)
+            self.assertEqual(other.read(), exported)
+
     def test_import_rechecks_and_is_atomic(self):
         self.tasks("a")
         events = self.store.read() + [{"seq": 9, "ts": "2026-01-01T00:00:00Z", "actor": "x",
