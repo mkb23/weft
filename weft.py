@@ -334,51 +334,122 @@ def matcher(a):
                             or a.refs in t["refs"] or bool(a.parent and t["parent"] == a.parent))
     return match
 
+HELP = """\
+weft: a tiny shared work graph for agents and the people they work with.
+
+A project is an append-only log of events about TASKS. Everything you see
+(ready, blocked, who holds what) is computed from that log.
+
+TASK      id · title · refs (what it's about) · parent (grouping) · data (JSON)
+          await (makes it a GATE: waits on something outside weft; whoever
+          can tell it has happened closes it, weft never checks)
+EDGES     A needs B   A can't be ready until B is closed (any close reason)
+          A <rel> B   any other relation is a label (spawned_from, supersedes…)
+STATES    closed    closed, with a reason in your own words
+          claimed   someone holds a live lease (claims lapse after --ttl)
+          blocked   something it needs isn't closed
+          awaiting  a gate, waiting on the outside world
+          ready     none of the above: claim it and do it
+RULES     no cycles in needs · one live claim per task ·
+          only the holder may release or close while the claim is live
+
+AGENT LOOP
+  weft ready                          what can I do?
+  weft claim T                        it's mine (renew by claiming again)
+  weft comment "…" --on T             progress, findings, questions
+  weft close T --reason produced      done for now (or abandoned, superseded…)
+  weft release T -m "resume: …"       stop without finishing; say how to resume
+  weft create "…" --needs G           new work that waits on G
+  weft create "Approve X" --await "ask:DECISIONS.md#D4"   a gate on a decision
+
+STORE     $WEFT (db path or server URL), else the nearest .weft/ upward.
+          $WEFT_TOKEN for a server, $WEFT_ACTOR names you (default user@host).
+OUTPUT    add --json anywhere for machine-readable output.
+"""
+
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="weft", description="A tiny shared work graph for agents.")
-    p.add_argument("--json", action="store_true", help="machine-readable output")
-    sub = p.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("init", help="create .weft/ here (a local store, or --url for a server)")
-    c.add_argument("--url")
-    for name in ("create", "update"):
-        c = sub.add_parser(name, help=f"{name} a task")
-        if name == "update":
-            c.add_argument("task")
-        c.add_argument("title", nargs="?" if name == "update" else None)
-        c.add_argument("--refs", action="append", help="something this task is about (repeatable)")
-        c.add_argument("--parent")
-        c.add_argument("--await", dest="await_", metavar="WHAT", help="make it a gate on something outside")
-        c.add_argument("--data", type=json.loads, help="a JSON object merged into the task's data")
-        if name == "create":
-            c.add_argument("--id", help="choose the id (default: t-<random>)")
-            c.add_argument("--needs", action="append", default=[], help="a task this one needs (repeatable)")
-    for name in ("link", "unlink"):
-        c = sub.add_parser(name, help=f"{name} two tasks: TASK needs OTHER, or any other relation")
-        c.add_argument("task"); c.add_argument("rel"); c.add_argument("to")
-    c = sub.add_parser("claim", help="claim a task (a lease; claim again to renew)")
-    c.add_argument("task"); c.add_argument("--ttl", default="1h")
-    for name in ("release", "close", "reopen"):
-        c = sub.add_parser(name, help=f"{name} a task")
-        c.add_argument("task")
-        if name == "close":
-            c.add_argument("--reason", required=True, help="a word: produced, abandoned, superseded, …")
-        c.add_argument("-m", "--message", help="also comment")
-    c = sub.add_parser("comment", help="say something, on a task or to everyone")
-    c.add_argument("text"); c.add_argument("--on", dest="task"); c.add_argument("--to"); c.add_argument("--re", type=int)
-    c.add_argument("--data", type=json.loads)
-    c = sub.add_parser("ready", help="tasks nobody holds whose needs are all closed")
-    c.add_argument("--refs"); c.add_argument("--parent")
-    c = sub.add_parser("show", help="one task in detail, or every task")
+    fmt = argparse.RawDescriptionHelpFormatter
+    p = argparse.ArgumentParser(prog="weft", description=HELP, formatter_class=fmt,
+                                epilog="Run `weft COMMAND --help` for details. Full spec: SPEC.md")
+    p.add_argument("--json", action="store_true", help="machine-readable output (JSON)")
+    sub = p.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
+    shared = argparse.ArgumentParser(add_help=False)   # so --json also works after the command
+    shared.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="machine-readable output")
+    cmd = lambda name, help, example="": sub.add_parser(
+        name, help=help, description=help, formatter_class=fmt, parents=[shared],
+        epilog=f"example:\n  {example}" if example else None)
+
+    c = cmd("init", "create .weft/ here: a local store, or --url to point at a server",
+            "weft init   |   weft init --url http://master:7411/myproject")
+    c.add_argument("--url", help="use this server instead of a local store")
+
+    create = cmd("create", "create a task (prints its id)",
+            'weft create "Run arm 3" --needs t-1a2b3c --refs H2 --data \'{"cap_usd": 12}\'')
+    create.add_argument("title")
+    create.add_argument("--id", help="choose the id (default: t-<6 hex>)")
+    update = cmd("update", "change a task's fields (data is merged, the rest replaced)",
+            'weft update t-1a2b3c --title "Run arm 3 (GPT-4.1-mini)"')
+    update.add_argument("task")
+    update.add_argument("--title")
+    for c in create, update:
+        c.add_argument("--refs", action="append", metavar="REF",
+                       help="what the task is about: a doc, entity or URL (repeatable)")
+        c.add_argument("--parent", metavar="TASK", help="group under another task (doesn't block)")
+        c.add_argument("--await", dest="await_", metavar="WHAT",
+                       help="make it a gate on something outside weft, e.g. ask:DOC#ID, time:DATE")
+        c.add_argument("--data", type=json.loads, metavar="JSON", help="a JSON object merged into data")
+    create.add_argument("--needs", action="append", default=[], metavar="TASK",
+                                       help="a task this one needs (repeatable)")
+
+    for name, verb in (("link", "add"), ("unlink", "remove")):
+        c = cmd(name, f"{verb} an edge: TASK needs OTHER blocks; any other REL is a label",
+                f"weft {name} t-2b3c4d needs t-1a2b3c   |   weft {name} t-3c4d5e spawned_from t-2b3c4d")
+        c.add_argument("task"); c.add_argument("rel"); c.add_argument("to", metavar="other")
+
+    c = cmd("claim", "claim a task: a lease that lapses after --ttl unless you claim again",
+            "weft claim t-1a2b3c --ttl 2h")
+    c.add_argument("task"); c.add_argument("--ttl", default="1h", help="lease length: 90s, 30m, 2h, 1d (default 1h)")
+    c = cmd("release", "let go of a claim without closing; leave a resume note with -m",
+            'weft release t-1a2b3c -m "resume: oracle done, start the observer"')
+    c.add_argument("task"); c.add_argument("-m", "--message", help="comment first (how to resume)")
+    c = cmd("close", "close a task with a reason; anything that needs it unblocks",
+            'weft close t-1a2b3c --reason produced -m "results in runs/arm3/summary.md"')
+    c.add_argument("task")
+    c.add_argument("--reason", required=True, help="a word: produced, abandoned, superseded, approved, no, …")
+    c.add_argument("-m", "--message", help="comment first (what came of it)")
+    c = cmd("reopen", "reopen a closed task", "weft reopen t-1a2b3c -m \"the result didn't hold\"")
+    c.add_argument("task"); c.add_argument("-m", "--message", help="comment first (why)")
+
+    c = cmd("comment", "say something on a task (or to everyone); it waits there for whoever comes next",
+            'weft comment "60/100 games done" --on t-1a2b3c --data \'{"spent_usd": 2.1}\'')
+    c.add_argument("text"); c.add_argument("--on", dest="task", metavar="TASK", help="the task it's about")
+    c.add_argument("--to", help="who it's for: a task, an actor or a role")
+    c.add_argument("--re", type=int, metavar="SEQ", help="the event it replies to")
+    c.add_argument("--data", type=json.loads, metavar="JSON", help="structured payload")
+
+    c = cmd("ready", "list tasks nobody holds whose needs are all closed", "weft ready --refs H2")
+    c.add_argument("--refs", metavar="REF", help="only tasks that refer to REF")
+    c.add_argument("--parent", metavar="TASK", help="only tasks grouped under TASK")
+    c = cmd("show", "show one task in detail (state, needs, needed by, recent comments), or list all",
+            "weft show t-1a2b3c   |   weft --json show")
     c.add_argument("task", nargs="?")
-    c = sub.add_parser("watch", help="print events as they happen, filtered by position in the graph")
-    c.add_argument("--since", type=int, help="replay from this seq (default: only new events)")
-    c.add_argument("--task"); c.add_argument("--up", metavar="TASK"); c.add_argument("--down", metavar="TASK")
-    c.add_argument("--refs"); c.add_argument("--parent"); c.add_argument("--to")
-    c.add_argument("--no-follow", action="store_true")
-    sub.add_parser("export", help="print every event as JSON lines")
-    c = sub.add_parser("import", help="restore exported JSON lines into an empty local store")
+    c = cmd("watch", "print events as they happen, filtered by position in the graph",
+            "weft watch --down t-1a2b3c          # everything waiting on this gate\n"
+            "  weft watch --since 0 --no-follow     # the whole history")
+    c.add_argument("--since", type=int, metavar="SEQ", help="replay after this event (default: only new events)")
+    c.add_argument("--task", help="this task only"); c.add_argument("--up", metavar="TASK", help="everything TASK needs")
+    c.add_argument("--down", metavar="TASK", help="everything that needs TASK")
+    c.add_argument("--refs", metavar="REF", help="tasks that refer to REF")
+    c.add_argument("--parent", metavar="TASK", help="tasks grouped under TASK")
+    c.add_argument("--to", help="comments addressed to this")
+    c.add_argument("--no-follow", action="store_true", help="stop at the end instead of waiting")
+
+    cmd("export", "print the whole log as JSON lines (commit it next to the work)",
+        "weft export > .weft/events.jsonl")
+    c = cmd("import", "restore exported JSON lines into an empty local store", "weft import .weft/events.jsonl")
     c.add_argument("file")
-    c = sub.add_parser("serve", help="serve DIR/<project>.db over HTTP")
+    c = cmd("serve", "serve DIR/<project>.db to other boxes over HTTP (needs DIR/tokens beyond localhost)",
+            "weft serve /srv/weft --host 0.0.0.0   # tokens file: one '<token> <actor>' per line")
     c.add_argument("dir"); c.add_argument("--host", default="127.0.0.1"); c.add_argument("--port", type=int, default=7411)
     a = p.parse_args(argv)
     try:
