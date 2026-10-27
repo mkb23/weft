@@ -13,6 +13,7 @@ from pathlib import Path
 VERBS = ("create", "update", "link", "unlink", "claim", "release", "close", "reopen", "comment")
 FIELDS = ("title", "refs", "parent", "await", "data")
 DEFAULT_TTL = 3600
+CLAIM_STATUSES = ("working", "waiting", "stuck")
 
 
 class WeftError(Exception):
@@ -57,9 +58,13 @@ def apply(g, e):
             edges.append(edge)
         elif verb == "unlink":
             edges.remove(edge)
-    elif verb == "claim":
+    elif verb == "claim":   # a claim is also a heartbeat: status and progress persist until changed
         until = parse_ts(e["ts"]) + timedelta(seconds=body.get("ttl", DEFAULT_TTL))
-        t["lease"] = {"actor": e["actor"], "until": stamp(until)}
+        old = t["lease"] if t["lease"] and t["lease"]["actor"] == e["actor"] else {}
+        status = body.get("status") or old.get("status", "working")
+        t["lease"] = {"actor": e["actor"], "until": stamp(until), "status": status,
+                      "progress": body.get("progress", old.get("progress")),
+                      "since": old["since"] if old.get("status") == status else e["ts"]}
     elif verb == "release":
         t["lease"] = None
     elif verb == "close":
@@ -137,6 +142,8 @@ def check(g, e):
         who = holder(t)
         if who and who != e["actor"]:                                         # rules 2 and 3
             raise WeftError(f"{id} is claimed by {who} until {t['lease']['until']}")
+        if verb == "claim" and body.get("status", "working") not in CLAIM_STATUSES:
+            raise WeftError(f"claim status must be one of {', '.join(CLAIM_STATUSES)}")
         if verb == "claim" and t["closed"]:
             raise WeftError(f"{id} is closed ({t['reason']})")
 
@@ -316,7 +323,9 @@ def server(root, host="127.0.0.1", port=7411):
 
 def summary(g, t):
     s = state(g, t)
-    extra = {"closed": t["reason"], "claimed": t["lease"] and t["lease"]["actor"],
+    lease = t["lease"] or {}
+    claim = " · ".join(str(x) for x in (lease.get("actor"), lease.get("status"), lease.get("progress")) if x)
+    extra = {"closed": t["reason"], "claimed": claim,
              "blocked": " ".join(blockers(g, t)), "awaiting": t["await"]}.get(s)
     return f"{t['id']:<10} {s:<9} {t['title']}" + (f"  ({extra})" if extra else "")
 
@@ -346,7 +355,8 @@ TASK      id · title · refs (what it's about) · parent (grouping) · data (JS
 EDGES     A needs B   A can't be ready until B is closed (any close reason)
           A <rel> B   any other relation is a label (spawned_from, supersedes…)
 STATES    closed    closed, with a reason in your own words
-          claimed   someone holds a live lease (claims lapse after --ttl)
+          claimed   someone holds a live lease (claims lapse after --ttl), with a
+                    status: working · waiting (paused on something outside) · stuck
           blocked   something it needs isn't closed
           awaiting  a gate, waiting on the outside world
           ready     none of the above: claim it and do it
@@ -356,6 +366,7 @@ RULES     no cycles in needs · one live claim per task ·
 AGENT LOOP
   weft ready                          what can I do?
   weft claim T                        it's mine (renew by claiming again)
+  weft claim T --status stuck -m "…"  report how it's going: working·waiting·stuck
   weft comment "…" --on T             progress, findings, questions
   weft close T --reason produced      done for now (or abandoned, superseded…)
   weft release T -m "resume: …"       stop without finishing; say how to resume
@@ -406,9 +417,16 @@ def main(argv=None):
                 f"weft {name} t-2b3c4d needs t-1a2b3c   |   weft {name} t-3c4d5e spawned_from t-2b3c4d")
         c.add_argument("task"); c.add_argument("rel"); c.add_argument("to", metavar="other")
 
-    c = cmd("claim", "claim a task: a lease that lapses after --ttl unless you claim again",
-            "weft claim t-1a2b3c --ttl 2h")
+    c = cmd("claim", "claim a task, or (as its holder) renew the claim and report how it's going",
+            'weft claim t-1a2b3c --ttl 2h\n'
+            '  weft claim t-1a2b3c --status waiting -m "cluster job running, ~3h"\n'
+            '  weft claim t-1a2b3c --status stuck -m "results disagree with the simulation"')
     c.add_argument("task"); c.add_argument("--ttl", default="1h", help="lease length: 90s, 30m, 2h, 1d (default 1h)")
+    c.add_argument("--status", choices=CLAIM_STATUSES,
+                   help="working (default) · waiting: paused on something outside, keeping the claim · "
+                        "stuck: needs help. Kept until you change it")
+    c.add_argument("--progress", help="free-form, e.g. 60/100 or 'analysis half done'. Kept until changed")
+    c.add_argument("-m", "--message", help="comment first (what's happening)")
     c = cmd("release", "let go of a claim without closing; leave a resume note with -m",
             'weft release t-1a2b3c -m "resume: oracle done, start the observer"')
     c.add_argument("task"); c.add_argument("-m", "--message", help="comment first (how to resume)")
@@ -516,7 +534,8 @@ def run(a):
     elif a.cmd in ("link", "unlink"):
         events = [{"verb": a.cmd, "task": id, "body": {"rel": a.rel, "to": a.to}}]
     elif a.cmd == "claim":
-        events = [{"verb": "claim", "task": id, "body": {"ttl": seconds(a.ttl)}}]
+        body = {"ttl": seconds(a.ttl), "status": a.status, "progress": a.progress}
+        events = [{"verb": "claim", "task": id, "body": {k: v for k, v in body.items() if v is not None}}]
     elif a.cmd == "comment":
         body = {k: v for k, v in (("text", a.text), ("to", a.to), ("re", a.re), ("data", a.data)) if v is not None}
         events = [{"verb": "comment", "task": id, "body": body}]

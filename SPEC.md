@@ -27,7 +27,7 @@ Every event has the same shape:
 | `update` | any of `title`, `refs`, `parent`, `await`, `data` | Fields are replaced, except `data`, which is merged key by key |
 | `link` | `rel`, `to` | Adds an edge. **Only `rel: "needs"` has meaning**: this task can't be ready until `to` is closed. Any other `rel` is a label |
 | `unlink` | `rel`, `to` | Removes that edge |
-| `claim` | `ttl` (seconds, default 3600) | A lease on the task until `ts + ttl`. Claiming again renews it |
+| `claim` | `ttl` (seconds, default 3600), and optionally `status`, `progress` | A lease on the task until `ts + ttl`. Claiming again renews it, so a claim is also the holder's heartbeat. `status` is `working` (default), `waiting` (paused on something outside, keeping the claim) or `stuck` (needs help). `progress` is a free string. Both persist across renewals until changed. A new holder starts at `working` |
 | `release` | — | Ends the lease |
 | `close` | `reason` | The task is over. `reason` is a free word: *produced*, *abandoned*, *superseded*, *approved*, *no*… Ends any lease |
 | `reopen` | — | The task is open again |
@@ -51,7 +51,7 @@ A store applies each batch of events in one transaction. It checks every event a
 2. **One live claim.** A `claim` is refused while a lease held by someone else is live (`now < until`). A closed task can't be claimed.
 3. **Only the holder lets go.** While a lease is live, only its holder can `release` or `close` the task.
 
-There is also basic validation: `create` needs a title and a fresh id; every other verb needs an existing task (except a `comment` with no task); `link` needs an existing target; and `unlink` needs an existing edge.
+There is also basic validation: a claim `status` must be `working`, `waiting` or `stuck`; `create` needs a title and a fresh id; every other verb needs an existing task (except a `comment` with no task); `link` needs an existing target; and `unlink` needs an existing edge.
 
 ## Derived on read
 
@@ -60,7 +60,7 @@ A fold is a pure function from events to a graph of tasks. From it:
 | State | When |
 |---|---|
 | **closed** | its latest close/reopen was a close |
-| **claimed** | it has a live lease |
+| **claimed** | it has a live lease. The lease carries `actor`, `until`, `status`, `progress` and `since` (when the status last changed) |
 | **blocked** | some task it `needs` isn't closed |
 | **awaiting** | it has an `await` and nothing else stops it |
 | **ready** | none of the above: anyone can claim it |

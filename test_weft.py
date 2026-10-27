@@ -52,6 +52,18 @@ class Rules(Base):
         self.assertRaises(WeftError, self.put, ev("claim", "a"), actor="bob")
         self.put(ev("claim", "a", ttl=60), actor="ann")  # renewing is fine
 
+    def test_claim_status_is_a_heartbeat(self):
+        self.put(ev("create", "a", title="A"), ev("claim", "a"))
+        lease = lambda: self.graph()["a"]["lease"]
+        self.assertEqual(lease()["status"], "working")
+        self.put(ev("claim", "a", status="stuck", progress="3/10"))
+        since = lease()["since"]
+        self.put(ev("claim", "a", ttl=600))                  # a plain renewal keeps status, progress, since
+        self.assertEqual((lease()["status"], lease()["progress"], lease()["since"]), ("stuck", "3/10", since))
+        self.assertRaises(WeftError, self.put, ev("claim", "a", status="done"))
+        self.assertRaises(WeftError, self.put, ev("claim", "a", status="working"), actor="bob")
+        self.assertIn("ann · stuck · 3/10", weft.summary(self.graph(), self.graph()["a"]))
+
     def test_rule3_only_holder_releases_or_closes(self):
         self.put(ev("create", "a", title="A"), ev("claim", "a"))
         self.assertRaises(WeftError, self.put, ev("close", "a", reason="produced"), actor="bob")

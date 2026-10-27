@@ -19,7 +19,7 @@ weft was made for **science**, which branches, gets reframed and goes quiet for 
 | State | Means |
 |---|---|
 | `closed` | closed, with a reason: produced, abandoned, superseded, approved, no… |
-| `claimed` | someone holds a live claim. A claim is a lease that lapses after its TTL unless renewed |
+| `claimed` | someone holds a live claim: a lease that lapses after its TTL unless renewed. The holder reports a status: **working** · **waiting** (paused on something outside, keeping the claim) · **stuck** (needs help) |
 | `blocked` | something it needs isn't closed |
 | `awaiting` | a gate, waiting on the outside world |
 | `ready` | none of the above: claim it and do it |
@@ -38,7 +38,7 @@ weft was made for **science**, which branches, gets reframed and goes quiet for 
 | `weft create "title" [--needs T] [--refs R] [--parent T] [--await W] [--data JSON] [--id ID]` | a new task (prints its id) |
 | `weft update T [--title …] [--refs …] [--parent …] [--await …] [--data …]` | change fields (`data` merges) |
 | `weft link T needs U` · `weft unlink T needs U` | add or remove an edge (any other rel is a label) |
-| `weft claim T [--ttl 2h]` | take a task. Claim again to renew |
+| `weft claim T [--ttl 2h] [--status working\|waiting\|stuck] [--progress P] [-m "…"]` | take a task. Claim again to renew and say how it's going. Status and progress persist until changed |
 | `weft release T [-m "resume: …"]` | let go without finishing, saying how to resume |
 | `weft close T --reason WORD [-m "…"]` · `weft reopen T` | finish (or give up) · undo |
 | `weft comment "…" [--on T] [--to WHO] [--re SEQ] [--data JSON]` | say something. It stays on the task for whoever comes next |
@@ -53,7 +53,8 @@ Add `--json` anywhere for machine-readable output. `weft COMMAND --help` gives e
 ```sh
 weft ready                                   # what can I do?
 weft claim t-3c9e01 --ttl 2h                 # it's mine
-weft comment "halfway; oracle works" --on t-3c9e01
+weft claim t-3c9e01 --progress 50/100        # renew, and say how far
+weft claim t-3c9e01 --status stuck -m "results disagree with the simulation"
 weft close t-3c9e01 --reason produced -m "results in runs/arm3/summary.md"
 # or, if you must stop:
 weft release t-3c9e01 -m "resume: start from the observer"
