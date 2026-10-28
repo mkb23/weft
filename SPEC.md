@@ -27,7 +27,7 @@ Every event has the same shape:
 | `update` | any of `title`, `refs`, `parent`, `await`, `data` | Fields are replaced, except `data`, which is merged key by key |
 | `link` | `rel`, `to` | Adds an edge. **Only `rel: "needs"` has meaning**: this task can't be ready until `to` is closed. Any other `rel` (a lowercase word) is a label |
 | `unlink` | `rel`, `to` | Removes that edge |
-| `claim` | `ttl` (seconds, 1 s to 7 days, default 3600), optional `status` | A lease until `ts + ttl`. Claiming again renews it, so a claim is the holder's heartbeat. `status` is `working` (a new claim's default), `waiting` (a short pause) or `stuck` (needs help). It persists across renewals until changed |
+| `claim` | `ttl` (seconds, 1 s to 7 days, default 3600), optional `status` | A lease until `ts + ttl`. Claiming again renews it, so a claim is the holder's heartbeat. `status` is `working` (a new claim's default), `waiting` (a short pause) or `stuck` (needs help). It persists across renewals until changed. With `task: null` and `next: {refs?, parent?}`, the store claims the oldest ready task that fits, inside the write, so workers fanning out never collide; the log records an ordinary claim |
 | `release` | optional `force: true` | Ends the lease. `force` releases someone else's live claim, and the event records who did it |
 | `close` | `reason` (a non-empty string) | The task is over: *produced*, *abandoned*, *superseded*, *approved*, *no*… Ends any lease |
 | `reopen` | — | The task is open again |

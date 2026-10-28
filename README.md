@@ -45,6 +45,7 @@ A lapsed claim stays visible (`lapsed: ann · waiting, 2d ago`), so a job that d
 | `weft update T [--title …] [--refs …] [--parent …] [--await …] [--data …]` | change fields (`data` merges) |
 | `weft link T needs U` · `weft unlink T needs U` | add or remove an edge (any other rel is a label) |
 | `weft claim T [--ttl 2h] [--status working\|waiting\|stuck] [-m "…"]` | take a ready task, or renew yours and say how it's going |
+| `weft claim --next [--refs R] [--parent G]` | take the oldest ready task, atomically: workers fanning out never collide |
 | `weft record T NAME=VALUE …` | record values: progress, spend, tokens… (see below) |
 | `weft comment "…" [--on T] [--to WHO] [--re SEQ] [--data JSON]` | say something. It stays on the task for whoever comes next |
 | `weft release T [-m "resume: …"] [--force]` | let go without finishing, saying how to resume |

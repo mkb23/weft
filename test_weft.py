@@ -78,6 +78,32 @@ class Rules(Base):
         self.put(ev("claim", "a"), ev("close", "a", reason="produced"))
         self.assertRaisesRegex(WeftError, "closed", self.put, ev("claim", "a"))
 
+    def test_claim_next_takes_the_oldest_ready_task(self):
+        self.tasks("grp", "a", "b", "c", "d")
+        self.put(ev("create", "gate", title="G", **{"await": "ask:D1"}), ev("link", "a", rel="needs", to="gate"),
+                 *(ev("update", x, parent="grp") for x in "bcd"))
+        self.put(ev("claim", "b"), actor="bob")
+        nxt = lambda **f: self.put(ev("claim", None, next=f))[0]
+        self.assertEqual(nxt(parent="grp")["task"], "c")   # b is bob's
+        self.assertEqual(nxt()["task"], "d")                # grp is a group, a is blocked by the gate
+        self.assertNotIn("next", self.store.read()[-1]["body"])   # the log holds an ordinary claim
+        self.assertRaisesRegex(WeftError, "nothing ready", nxt)
+
+    def test_claim_next_never_collides(self):
+        ids = [f"t{i}" for i in range(6)]
+        self.tasks(*ids)
+        got, refused = [], []
+        def worker(name):
+            store = Local(self.store.path)
+            try:
+                got.append(store.append([ev("claim", None, next={})], name)[0]["task"])
+            except WeftError:
+                refused.append(name)
+        threads = [threading.Thread(target=worker, args=(f"w{i}",)) for i in range(9)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        self.assertEqual((sorted(got), len(refused)), (ids, 3))
+
     def test_rule2_holder_may_renew_after_adding_a_blocker(self):
         self.tasks("a", "fix")
         self.put(ev("claim", "a"), ev("link", "a", rel="needs", to="fix"))
@@ -312,6 +338,8 @@ class Server(unittest.TestCase):
         ann.append([ev("comment", "a", text="halfway", to="bob")], actor=None)
         self.assertEqual(next(stream)["body"]["text"], "halfway")
         stream.close()
+        ann.append([ev("create", "b", title="B")], None)
+        self.assertEqual(bob.append([ev("claim", None, next={})], None)[0]["task"], "b")   # resolved server-side
 
     def test_bad_requests_get_answers(self):
         def status(path, body):
@@ -400,6 +428,13 @@ class Cli(unittest.TestCase):
         self.assertIn("number ≥ 0 (USD)  [define]  cumulative spend", names)
         self.assertIn("tokens           number  [first use]", names)
         self.assertIn("spend_usd is number ≥ 0 (USD)", self.fails("record", "x", "spend_usd=-1"))
+
+    def test_claim_next(self):
+        self.run_("create", "x", "--id", "x", "--refs", "E6")
+        self.assertIn("a task or --next", self.fails("claim"))
+        self.assertIn("nothing ready", self.fails("claim", "--next", "--refs", "E7"))
+        self.assertEqual(self.run_("claim", "--next", "--refs", "E6", "-m", "on it"), "x\n")
+        self.assertIn("ann: on it", self.run_("show", "x"))
 
     def test_init_refuses_a_second_store(self):
         self.assertIn("already has a store", self.fails("init"))

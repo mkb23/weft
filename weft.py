@@ -118,6 +118,9 @@ def state(g, t, at=None):
         return "blocked"
     return "awaiting" if t["await"] else "ready"
 
+def fits(t, refs=None, parent=None):
+    return (not refs or refs in t["refs"]) and (not parent or t["parent"] == parent)
+
 def walk(start, step):
     seen, todo = set(), [start]
     while todo:
@@ -282,6 +285,12 @@ class Local:
             if stamped and g:
                 raise WeftError("import needs an empty store")
             for e in events:
+                if e["verb"] == "claim" and e["task"] is None and isinstance(e["body"].get("next"), dict):
+                    f, at = e["body"].pop("next"), parse_ts(e["ts"])   # claim the oldest ready task, atomically
+                    e["task"] = next((id for id, t in g.items() if state(g, t, at) == "ready"
+                                      and fits(t, f.get("refs"), f.get("parent"))), None)
+                    if not e["task"]:
+                        raise WeftError("nothing ready to claim")
                 check(g, e)
                 e["seq"] = db.execute("insert into events (seq, ts, actor, verb, task, body) values (?,?,?,?,?,?)",
                                       (e.get("seq"), e["ts"], e["actor"], e["verb"], e["task"],
@@ -554,6 +563,7 @@ RULES   no cycles in needs · claim only ready tasks (or renew your own) ·
 AGENT LOOP
   weft ready                          what can I do?
   weft claim T                        it's mine (claim again to renew)
+  weft claim --next                   the oldest ready task is mine (prints it)
   weft claim T --status stuck -m "…"  how it's going: working · waiting · stuck
   weft record T progress=0.6 spend_usd=3.75   how far (0-1), how much (totals)
   weft comment "…" --on T             findings, questions
@@ -609,8 +619,11 @@ def main(argv=None):
                 f"weft {name} t-3c4d5e spawned_from t-2b3c4d")
         c.add_argument("task"); c.add_argument("rel"); c.add_argument("to", metavar="other")
 
-    c = cmd("claim", "claim a ready task, or renew your own claim and say how it's going", message="what's happening")
-    c.add_argument("task")
+    c = cmd("claim", "claim a ready task, or renew your own claim and say how it's going",
+            "weft claim --next --parent t-1a2b3c   # fan-out: each worker gets a different task", message="what's happening")
+    c.add_argument("task", nargs="?")
+    c.add_argument("--next", action="store_true", help="claim the oldest ready task (filtered by --refs, --parent)")
+    c.add_argument("--refs", metavar="REF"); c.add_argument("--parent", metavar="TASK")
     c.add_argument("--ttl", type=duration, default=DEFAULT_TTL, help="until it lapses: 90s, 30m, 2h, 1d (default 1h, at most 7d)")
     c.add_argument("--status", choices=CLAIM_STATUSES, help="working (the default) · waiting: a short pause · stuck: needs help. Kept across renewals")
     c = cmd("release", "let go of a claim without closing it", message="how to resume")
@@ -726,8 +739,7 @@ def run(a):
         lines += [f"  #{c['seq']} {c['actor']}: {c.get('text') or json.dumps(c.get('data'))}" for c in t["comments"][-5:]]
         return out(t, "\n".join(lines))
     if a.cmd in ("ready", "show"):
-        ts = [t for t in g.values() if a.cmd == "show" or (state(g, t) == "ready"
-              and (not a.refs or a.refs in t["refs"]) and (not a.parent or t["parent"] == a.parent))]
+        ts = [t for t in g.values() if a.cmd == "show" or (state(g, t) == "ready" and fits(t, a.refs, a.parent))]
         return out([detail(g, t) for t in ts], "\n".join(summary(g, t) for t in ts))
 
     # everything else writes events
@@ -740,7 +752,11 @@ def run(a):
     elif a.cmd in ("link", "unlink"):
         events = [{"verb": a.cmd, "task": id, "body": {"rel": a.rel, "to": a.to}}]
     elif a.cmd == "claim":
+        if bool(id) == a.next:
+            raise WeftError("claim takes a task or --next")
         body = {"ttl": a.ttl} | ({"status": a.status} if a.status else {})
+        if a.next:
+            body["next"] = {k: v for k, v in (("refs", a.refs), ("parent", a.parent)) if v}
         events = [{"verb": "claim", "task": id, "body": body}]
     elif a.cmd == "release":
         events = [{"verb": "release", "task": id, "body": {"force": True} if a.force else {}}]
@@ -769,11 +785,16 @@ def run(a):
         events = [{"verb": "comment", "task": id, "body": body}]
     else:  # reopen
         events = [{"verb": a.cmd, "task": id, "body": {}}]
-    if getattr(a, "message", None):
+    if getattr(a, "message", None) and id:
         events.insert(0, {"verb": "comment", "task": id, "body": {"text": a.message}})
     if a.cmd == "claim" and "WEFT_ACTOR" not in os.environ and not a.json:
         print(f"weft: note: claiming as {me}; set WEFT_ACTOR so agents on this box don't share claims", file=sys.stderr)
-    out({"id": id, "events": store.append(events, me)}, id or "ok")
+    done = store.append(events, me)
+    if a.cmd == "claim" and a.next:   # the task is known only now
+        id = done[0]["task"]
+        if a.message:
+            done += store.append([{"verb": "comment", "task": id, "body": {"text": a.message}}], me)
+    out({"id": id, "events": done}, id or "ok")
 
 
 if __name__ == "__main__":
