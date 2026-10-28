@@ -536,43 +536,38 @@ def matcher(a):
 HELP = """\
 weft: a tiny shared work graph for agents and the people they work with.
 
-A project is an append-only log of events about TASKS. Everything you see
-(ready, blocked, who holds what) is computed from that log. Most work needs no
-task: make one when work outlives your session, your box, or someone's attention.
+A project is an append-only log of events about TASKS; ready, blocked and who
+holds what are computed from it. Make a task only when work outlives your
+session, your box, or someone's attention.
 
-TASK      id · title · refs (what it's about) · parent (grouping) · data (JSON)
-          values (latest of what's been recorded: progress, spend_usd, tokens…)
-          await (makes it a GATE: waits on something outside weft; whoever
-          can tell it has happened closes it, weft never checks)
-EDGES     A needs B   A can't be ready until B is closed, for ANY reason: approved
-                      and no both unblock A, so read B's reason before acting
-          A <rel> B   any other relation is a label (spawned_from, supersedes…)
-STATES    closed    closed, with a reason in your own words
-          claimed   someone holds a live claim (it lapses after --ttl), with a
-                    status: working · waiting (short pause) · stuck (needs help)
-          blocked   something it needs, or one of its children, isn't closed
-          awaiting  a gate, waiting on the outside world
-          ready     none of the above: claim it and do it
-RULES     no cycles in needs · you can only claim a ready task (or renew your
-          own claim) · only the holder can release or close a claimed task
+TASK    id · title · refs (what it's about) · parent (its group) · data (JSON)
+        · values (latest recorded: progress, spend_usd…) · await (makes it a
+        GATE on the outside world; whoever sees it happen closes it)
+EDGES   A needs B: A waits until B closes, for ANY reason (approved and no both
+        unblock A, so read B's reason). Any other relation is a label.
+STATES  closed (with a reason) · claimed (a live claim, lapsing after --ttl;
+        status working, waiting or stuck) · blocked (a need or child is open)
+        · awaiting (a gate) · ready (none of these: claim it)
+RULES   no cycles in needs · claim only ready tasks (or renew your own) ·
+        only the holder can release or close a claimed task
 
 AGENT LOOP
   weft ready                          what can I do?
-  weft claim T                        it's mine (renew by claiming again)
+  weft claim T                        it's mine (claim again to renew)
   weft claim T --status stuck -m "…"  how it's going: working · waiting · stuck
   weft record T progress=0.6 spend_usd=3.75   how far (0-1), how much (totals)
   weft comment "…" --on T             findings, questions
   weft close T --reason produced      done (or abandoned, superseded, no…)
-  weft release T -m "resume: …"       stop without finishing; say how to resume
+  weft release T -m "resume: …"       stop unfinished; say how to resume
   weft create "…" --needs G           new work that waits on G
   weft create "Approve X" --await "ask:DECISIONS.md#D4"   a gate on a decision
   weft create "Run sweep" --await "cmd:test -f out/done"  a long job: a gate
 
-YOU       set WEFT_ACTOR to your own name; agents sharing a name share claims.
-STORE     $WEFT (db path or server URL), else the nearest .weft/ upward, else
-          the repo's main checkout. A server's token: $WEFT_TOKEN, else the
-          line "<url-prefix> <token>" in ~/.config/weft/tokens (keep it 600).
-OUTPUT    add --json anywhere: results and errors become JSON.
+ENV     WEFT_ACTOR: your name (agents sharing a name share claims). WEFT: the
+        store (db path or server URL), else the nearest .weft/ upward, else the
+        repo's main checkout. A server's token: WEFT_TOKEN, else a line
+        "<url-prefix> <token>" in ~/.config/weft/tokens (keep it 600).
+        Add --json anywhere: results and errors become JSON.
 """
 
 def main(argv=None):
@@ -592,76 +587,61 @@ def main(argv=None):
         return c
 
     c = cmd("init", "create the project's .weft/ (at the repo's main checkout), or --url to use a server",
-            "weft init   |   weft init --url http://master:7411/myproject")
+            "weft init --url http://master:7411/myproject")
     c.add_argument("--url", help="use this server instead of a local store")
 
     create = cmd("create", "create a task (prints its id)",
-                 'weft create "Run arm 3" --needs t-1a2b3c --refs H2 --data \'{"budget": {"spend_usd": 12}}\'')
+                 'weft create "Run arm 3" --needs t-1a2b3c --data \'{"budget": {"spend_usd": 12}}\'')
     create.add_argument("title")
     create.add_argument("--id", help="choose the id (default: t-<6 hex>)")
-    update = cmd("update", "change a task's fields (data is merged, the rest replaced)",
-                 'weft update t-1a2b3c --title "Run arm 3 (GPT-4.1-mini)"')
+    update = cmd("update", "change a task's fields (data is merged, the rest replaced)")
     update.add_argument("task")
     update.add_argument("--title")
     for c in create, update:
-        c.add_argument("--refs", action="append", metavar="REF",
-                       help="what the task is about: a doc, entity or URL (repeatable)")
-        c.add_argument("--parent", metavar="TASK", help="group under another task, which stays blocked until its children close")
-        c.add_argument("--await", dest="await_", metavar="WHAT",
-                       help="make it a gate on something outside weft: ask:DOC#ID, cmd:SHELL, time:DATE")
+        c.add_argument("--refs", action="append", metavar="REF", help="what it's about: a doc, entity or URL (repeatable)")
+        c.add_argument("--parent", metavar="TASK", help="group under TASK, which stays blocked until its children close")
+        c.add_argument("--await", dest="await_", metavar="WHAT", help="make it a gate: ask:DOC#ID, cmd:SHELL, time:DATE")
         c.add_argument("--data", type=json_object, metavar="JSON", help="a JSON object merged into data")
     create.add_argument("--needs", action="append", default=[], metavar="TASK", help="a task this one needs (repeatable)")
 
     for name, verb in (("link", "add"), ("unlink", "remove")):
         c = cmd(name, f"{verb} an edge. `T needs OTHER` blocks T until OTHER closes; any other REL is a label",
-                f"weft {name} t-2b3c4d needs t-1a2b3c   |   weft {name} t-3c4d5e spawned_from t-2b3c4d")
+                f"weft {name} t-3c4d5e spawned_from t-2b3c4d")
         c.add_argument("task"); c.add_argument("rel"); c.add_argument("to", metavar="other")
 
-    c = cmd("claim", "claim a ready task, or renew your own claim and say how it's going",
-            'weft claim t-1a2b3c --ttl 2h\n'
-            '  weft claim t-1a2b3c --status stuck -m "results disagree with the simulation"',
-            message="what's happening")
+    c = cmd("claim", "claim a ready task, or renew your own claim and say how it's going", message="what's happening")
     c.add_argument("task")
-    c.add_argument("--ttl", type=duration, default=DEFAULT_TTL, help="how long until it lapses: 90s, 30m, 2h, 1d (default 1h; at most 7d)")
-    c.add_argument("--status", choices=CLAIM_STATUSES,
-                   help="working (a new claim's default) · waiting: a short pause, you'll be back · "
-                        "stuck: needs help. Kept across renewals until you change it")
-    c = cmd("release", "let go of a claim without closing it; say how to resume",
-            'weft release t-1a2b3c -m "resume: oracle done, start the observer"\n'
-            '  weft release t-1a2b3c --force -m "holder vanished; taking over"', message="how to resume")
+    c.add_argument("--ttl", type=duration, default=DEFAULT_TTL, help="until it lapses: 90s, 30m, 2h, 1d (default 1h, at most 7d)")
+    c.add_argument("--status", choices=CLAIM_STATUSES, help="working (the default) · waiting: a short pause · stuck: needs help. Kept across renewals")
+    c = cmd("release", "let go of a claim without closing it", message="how to resume")
     c.add_argument("task"); c.add_argument("--force", action="store_true", help="release someone else's claim (recorded)")
-    c = cmd("close", "close a task with a reason; anything that needs it unblocks",
-            'weft close t-1a2b3c --reason produced -m "results in runs/arm3/summary.md"\n'
-            "  weft close t-1a2b3c --superseded-by t-4d5e6f   # move its dependents to the new task", message="what came of it")
+    c = cmd("close", "close a task with a reason; anything that needs it unblocks", message="what came of it")
     c.add_argument("task")
     c.add_argument("--reason", help="a word: produced, abandoned, superseded, approved, no, …")
     c.add_argument("--superseded-by", metavar="TASK", help="close as superseded and move its dependents onto TASK")
-    c = cmd("reopen", "reopen a closed task", "weft reopen t-1a2b3c -m \"the result didn't hold\"", message="why")
+    c = cmd("reopen", "reopen a closed task", message="why")
     c.add_argument("task")
 
-    c = cmd("comment", "say something on a task (or to everyone); it waits there for whoever comes next",
-            'weft comment "halfway; the oracle works" --on t-1a2b3c')
+    c = cmd("comment", "say something on a task, or to everyone; it waits for whoever comes next")
     c.add_argument("text"); c.add_argument("--on", dest="task", metavar="TASK", help="the task it's about")
     c.add_argument("--to", help="who it's for: a task, an actor or a role")
     c.add_argument("--re", type=int, metavar="SEQ", help="the event it replies to")
     c.add_argument("--data", type=json_object, metavar="JSON", help="structured payload")
 
-    c = cmd("record", "record values against a task: progress, spend, tokens… (weft stores them, never adds them up)",
-            "weft record t-1a2b3c progress=0.6 spend_usd=3.75 tokens=182000\n"
-            "  # running totals, units in the name, progress 0-1; results belong in docs, not here", message="")
+    c = cmd("record", "record running totals against a task, units in the name (weft never adds them up; "
+            "results belong in docs)", message="")
     c.add_argument("task"); c.add_argument("values", nargs="+", metavar="NAME=VALUE")
     c = cmd("define", "declare a recorded name's type, range and unit (otherwise its first use decides)",
             'weft define spend_usd number --min 0 --unit USD -d "cumulative spend"')
     c.add_argument("name"); c.add_argument("type", choices=TYPES)
     c.add_argument("--min", type=float); c.add_argument("--max", type=float)
     c.add_argument("--unit"); c.add_argument("-d", "--description")
-    cmd("names", "list what this project records: each name's type, range, unit and description", "weft names")
+    cmd("names", "list what this project records: each name's type, range, unit and description")
 
-    c = cmd("ready", "list tasks you could claim now", "weft ready --refs H2")
+    c = cmd("ready", "list tasks you could claim now")
     c.add_argument("--refs", metavar="REF", help="only tasks that refer to REF")
     c.add_argument("--parent", metavar="TASK", help="only tasks grouped under TASK")
-    c = cmd("show", "one task in detail (state, needs, children, what points at it, comments), or list all",
-            "weft show t-1a2b3c   |   weft --json show")
+    c = cmd("show", "one task in detail (state, needs, children, what points at it, comments), or list all")
     c.add_argument("task", nargs="?")
     c = cmd("watch", "print events as they happen, filtered by position in the graph",
             "weft watch --down t-1a2b3c          # everything waiting on this gate\n"
@@ -672,14 +652,12 @@ def main(argv=None):
     c.add_argument("--refs", metavar="REF", help="tasks that refer to REF")
     c.add_argument("--parent", metavar="TASK", help="tasks grouped under TASK")
     c.add_argument("--to", help="comments addressed to this")
-    c.add_argument("--no-follow", action="store_true", help="stop at the end instead of waiting (follows by default)")
+    c.add_argument("--no-follow", action="store_true", help="stop at the end instead of waiting")
 
     cmd("export", "print the whole log as JSON lines (commit it next to the work)", "weft export > .weft/events.jsonl")
-    c = cmd("import", "restore an export into an empty local store (every event is re-checked)",
-            "weft import .weft/events.jsonl")
+    c = cmd("import", "restore an export into an empty local store (every event is re-checked)")
     c.add_argument("file")
-    c = cmd("serve", "serve DIR/<project>.db to other boxes over HTTP (needs DIR/tokens beyond localhost)",
-            "weft serve /srv/weft --host 0.0.0.0   # tokens file: one '<token> <actor>' per line")
+    c = cmd("serve", "serve DIR/<project>.db over HTTP; beyond localhost, DIR/tokens holds '<token> <actor>' lines")
     c.add_argument("dir"); c.add_argument("--host", default="127.0.0.1"); c.add_argument("--port", type=int, default=7411)
     a = p.parse_args(argv)
     try:

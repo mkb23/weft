@@ -55,7 +55,7 @@ A lapsed claim stays visible (`lapsed: ann · waiting, 2d ago`), so a job that d
 | `weft export` · `weft import FILE` | the log as JSON lines, and back |
 | `weft init [--url URL]` · `weft serve DIR` | set up a project · share stores with other boxes |
 
-Add `--json` anywhere: results and errors come back as JSON. `weft COMMAND --help` shows each command's flags and an example.
+Add `--json` anywhere: results and errors come back as JSON. `weft COMMAND --help` shows each command's flags.
 
 ## The agent loop
 
