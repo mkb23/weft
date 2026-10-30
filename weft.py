@@ -455,8 +455,11 @@ def server(root, host="127.0.0.1", port=7411):
             self.wfile.write(data)
 
         def route(self):
+            named = self.headers.get("X-Weft-Actor") or ""
             who = (tokens.get(self.headers.get("Authorization", "").removeprefix("Bearer "))
-                   if tokens is not None else self.headers.get("X-Weft-Actor") or "anonymous")
+                   if tokens is not None else named or "anonymous")
+            if who and named.startswith(who + "/") and len(named) > len(who) + 1:
+                who = named   # a token may name its own agents: <its actor>/<agent>
             url = urllib.parse.urlparse(self.path)
             name, _, rest = url.path.strip("/").partition("/")
             if not who:

@@ -117,7 +117,7 @@ There's **one store per project**, on one box (the master).
 | `GET /<project>/events?since=N&follow=1` | `text/event-stream`: one `data: <event>` per event (the backlog, then live), and a `: ping` comment every 15 s while idle |
 | any, with a bad token or an unknown project | `401` / `404` |
 
-**Auth:** `DIR/tokens` holds lines of `<token> <actor>`, and requests send `Authorization: Bearer <token>`. Without a tokens file the server binds only to loopback and takes the actor from `X-Weft-Actor`. Tokens travel in plain HTTP, so use a private network or a TLS proxy.
+**Auth:** `DIR/tokens` holds lines of `<token> <actor>`, and requests send `Authorization: Bearer <token>`. The token decides the actor, except that a request may name one of the token's own agents in `X-Weft-Actor` as `<token's actor>/<agent>` (e.g. `useful-bit/e013-loop`), so agents sharing a token still hold their own claims. Without a tokens file the server binds only to loopback and takes the actor from `X-Weft-Actor`. Tokens travel in plain HTTP, so use a private network or a TLS proxy.
 
 **Clocks:** the rules judge every event at its own `ts`: now for a live write, and the original time for an import, so an export always re-imports. When *reading*, a lease's state is computed with the reader's clock. The master's clock is the one that enforces the rules, so a remote reader with a skewed clock may *show* a different state but can't *break* a rule.
 

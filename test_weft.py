@@ -368,9 +368,12 @@ class Server(unittest.TestCase):
         ann, bob = Remote(self.url, "secret-a"), Remote(self.url, "secret-b")
         ann.append([ev("create", "a", title="A"), ev("claim", "a")], actor="spoofed")
         self.assertEqual(bob.read()[1]["actor"], "ann")   # the token decides who you are
+        ann.append([ev("comment", None, text="hi")], actor="ann/loop")   # or one of its own agents
+        ann.append([ev("comment", None, text="hi")], actor="bob/loop")   # but never someone else's
+        self.assertEqual([e["actor"] for e in bob.read()[-2:]], ["ann/loop", "ann"])
         self.assertRaisesRegex(WeftError, "claimed by ann", bob.append, [ev("claim", "a")], None)
         self.assertRaises(WeftError, Remote(self.url, "wrong").read)
-        stream = bob.follow(since=2)
+        stream = bob.follow(since=4)
         ann.append([ev("comment", "a", text="halfway", to="bob")], actor=None)
         self.assertEqual(next(stream)["body"]["text"], "halfway")
         stream.close()
