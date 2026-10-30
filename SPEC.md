@@ -25,7 +25,7 @@ Every event has the same shape:
 |---|---|---|
 | `create` | `title`, and optionally `refs`, `parent`, `await`, `data` | A new task. The writer chooses the id (the CLI uses `t-` plus 6 hex digits) |
 | `update` | any of `title`, `refs`, `parent`, `await`, `data` | Fields are replaced, except `data`, which is merged key by key |
-| `link` | `rel`, `to` | Adds an edge. **Only `rel: "needs"` has meaning**: this task can't be ready until `to` is closed. Any other `rel` (a lowercase word) is a label |
+| `link` | `rel`, `to` | Adds an edge. **Only `rel: "needs"` and `rel: "uses"` have meaning**: `needs` means this task can't be ready until `to` is closed; `uses` means it holds a unit of resource `to` while claimed. Any other `rel` (a lowercase word) is a label |
 | `unlink` | `rel`, `to` | Removes that edge |
 | `claim` | `ttl` (seconds, 1 s to 7 days, default 3600), optional `status` | A lease until `ts + ttl`. Claiming again renews it, so a claim is the holder's heartbeat. `status` is `working` (a new claim's default), `waiting` (a short pause) or `stuck` (needs help). It persists across renewals until changed. With `task: null` and `next: {refs?, parent?}`, the store claims the oldest ready task that fits, inside the write, so workers fanning out never collide; the log records an ordinary claim |
 | `release` | optional `force: true` | Ends the lease. `force` releases someone else's live claim, and the event records who did it |
@@ -42,6 +42,8 @@ Every event has the same shape:
 | `title` | A short description |
 | `refs` | Strings naming what the task is about: documents, entities, URLs. weft never interprets them |
 | `parent` | Another task's id. **A parent is blocked until its children are closed**, so a group is never claimable work |
+| `capacity` | A whole number ≥ 1 that makes the task a **resource**: a box, a GPU, a licence. Tasks that `uses` it hold one unit each while claimed; claiming the resource itself is an explicit hold, for long jobs with no task claim. A resource is never work: `ready` and `claim --next` never offer it |
+| `for` | Who should do the task: an actor or a role. `claim --next` skips it for anyone else, and `ready` labels it. A plain `claim` still works, so a person can pair with an agent |
 | `await` | An opaque string that makes the task a **gate**, a wait on the world (`ask:docs/DECISIONS.md#D4`, `cmd:test -f out/done`, `time:2026-11-03`). **weft never evaluates it.** Whoever can tell, closes it. A gate can't be claimed |
 | `data` | A JSON object, e.g. `{"budget": {"spend_usd": 20}}` |
 
@@ -50,14 +52,14 @@ Every event has the same shape:
 A store applies each batch of events in one transaction. Every event is checked against the graph folded from everything before it, including earlier events in the same batch. If any event fails, nothing is written.
 
 1. **No cycles in `needs`.** `link A needs B` is refused if `A` is already upstream of `B`, or if `A = B`.
-2. **Claim only what's ready.** A `claim` succeeds only on a **ready** task, or as a renewal by the actor who holds the live claim. That excludes tasks that are claimed by someone else, blocked, awaiting (gates) or closed.
+2. **Claim only what's ready.** A `claim` succeeds only on a **ready** task, or as a renewal by the actor who holds the live claim. That excludes tasks that are claimed by someone else, blocked, awaiting (gates) or closed. A task is blocked, among other things, while a resource it `uses` is full; holds by the claimer don't count, so your own hold never blocks you. Claiming a resource itself needs it **free** for you, and no live claim on it by someone else.
 3. **Only the holder lets go.** While a claim is live, only its holder can `release` or `close` the task. The exception is `release` with `force`, which is recorded.
 
 **Validation.** Shapes are checked too, because one malformed event would otherwise sit in the log for ever:
 - Ids are non-empty strings, and bodies are objects.
-- `title`, `parent` and `await` are strings; `refs` is a list of strings; `data` and `comment.data` are objects.
+- `title`, `parent`, `await` and `for` are strings; `capacity` is a whole number ≥ 1, and a task can't have both `capacity` and `await`; `refs` is a list of strings; `data` and `comment.data` are objects.
 - A `parent` must exist, and can't be the task itself.
-- `link` needs an existing target, and `unlink` an existing edge.
+- `link` needs an existing target, and `unlink` an existing edge. `uses` must point at a resource.
 - Relations that look like a misspelt `needs` are refused (`need`, `depends_on`, `blocks`…).
 - You can't `close` a closed task (reopen it first), `reopen` an open one, or `release` an unclaimed one.
 - Comment metadata (`seq`, `ts`, `actor`) can't be overridden from the body.
@@ -71,8 +73,9 @@ A fold is a pure function from events to a graph of tasks. From it:
 | State | When |
 |---|---|
 | **closed** | its latest close/reopen was a close |
+| **free** / **full** | for a resource (a task with `capacity`) only: whether its live holds are below its capacity. A resource is never ready, claimed or blocked |
 | **claimed** | it has a live lease (`now < until`). The lease carries `actor`, `until`, `status` and `since` (when the status last changed) |
-| **blocked** | a task it `needs`, or one of its children, isn't closed |
+| **blocked** | a task it `needs`, or one of its children, isn't closed; or a resource it `uses` is full or closed |
 | **awaiting** | it has an `await`, and nothing else stops it |
 | **ready** | none of the above: anyone can claim it |
 
@@ -84,6 +87,7 @@ Also derived on read:
 - **upstream / downstream**: everything a task needs, or that needs it, transitively. Downstream is what closing a gate releases.
 - **children, needed_by, linked_from**: what points at a task. This is how a superseded task shows what replaced it.
 - **values**: the latest recorded value of each name. **names**: each name's type, defined or from first use.
+- **holds**: a resource's live holds are its own lease (an explicit hold, for a long job) and the leases on open tasks that `use` it. `show` reports `load` and `holders: [{actor, via, until, status}]`, lapsed ones included, so "held by X, lapsed 3h ago" is visible. A dead job frees the resource when its lease lapses. An open gate never holds a resource, so a forgotten gate can't wedge one.
 - **lapsed claims**: a lease past `until` no longer counts, and it stays visible as "lapsed: who · status, how long ago". A dead job is never mistaken for work nobody started.
 
 ## Storage
@@ -130,7 +134,7 @@ Shapes that clients agree on. weft stores them but doesn't check them.
 | `comment.data` | `{"resume": "…"}` with a `release` (what to do when it's picked up again) · `{"artifact": "path/or/url"}` · `{"ephemeral": true}` (clients may skip it) |
 | `record` names | **Running totals, not increments** (`spend_usd=3.75`), so each record stands alone and rates come from the history. **Units in names:** `spend_usd`, `tokens`, `gpu_hours`. **`progress` is a number from 0 to 1.** Record cost and progress, **never results**: results belong in documents |
 | `task.data` | `{"budget": {"spend_usd": 20}}` sets a budget per recorded name, and `{"billing": "…"}` names a spend ledger's code |
-| `link` rels | `needs` (blocking) · `informs` (a soft input: "proceeding unless this gate steers us"; it never blocks) · `spawned_from` · `supersedes` |
+| `link` rels | `needs` (blocking) · `uses` (holds a resource while claimed) · `informs` (a soft input: "proceeding unless this gate steers us"; it never blocks) · `spawned_from` · `supersedes` |
 
 ## Versioning
 

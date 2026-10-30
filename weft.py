@@ -49,7 +49,7 @@ class Graph(dict):
         self.names = {}
 
 def blank(id):
-    return {"id": id, "title": None, "refs": [], "parent": None, "await": None, "data": {},
+    return {"id": id, "title": None, "refs": [], "parent": None, "await": None, "capacity": None, "for": None, "data": {},
             "needs": [], "links": [], "closed": False, "reason": None, "lease": None, "comments": [], "values": {}}
 
 def type_of(v):
@@ -61,7 +61,7 @@ def apply(g, e):
     if verb == "create":
         t = g[e["task"]] = blank(e["task"])
     if verb in ("create", "update"):
-        t.update({k: body[k] for k in ("title", "refs", "parent", "await") if k in body})
+        t.update({k: body[k] for k in ("title", "refs", "parent", "await", "capacity", "for") if k in body})
         t["data"].update(body.get("data", {}))
     elif verb in ("link", "unlink"):
         edges, edge = (t["needs"], body["to"]) if body["rel"] == "needs" else (t["links"], [body["rel"], body["to"]])
@@ -105,16 +105,33 @@ def holder(t, at=None):
 def children(g, id):
     return [y for y in g if g[y]["parent"] == id]
 
-def blockers(g, t):
-    """What stops t: needs that aren't closed, and (for a group) children that aren't."""
-    return [x for x in t["needs"] + children(g, t["id"]) if not g[x]["closed"]]
+def uses(t):
+    return [to for rel, to in t["links"] if rel == "uses"]
 
-def state(g, t, at=None):
+def holds(g, r, at=None, lapsed=False):
+    """Leases on resource r: its own claim (a hold), and claims on the open tasks that use it."""
+    on = [g[r]] + [y for y in g.values() if r in uses(y) and not y["closed"]]
+    return [{"actor": y["lease"]["actor"], "via": y["id"], "until": y["lease"]["until"], "status": y["lease"]["status"]}
+            for y in on if y["lease"] and (lapsed or holder(y, at))]
+
+def room(g, r, t, at=None, who=None):
+    """Whether r has room for t: r is open, and holds by others (not via t) are below its capacity."""
+    return not g[r]["closed"] and len([h for h in holds(g, r, at)
+                                       if h["actor"] != who and h["via"] != t["id"]]) < g[r]["capacity"]
+
+def blockers(g, t, at=None, who=None):
+    """What stops t: needs and children that aren't closed, and resources it uses that are full (for others than who)."""
+    return ([x for x in t["needs"] + children(g, t["id"]) if not g[x]["closed"]]
+            + [r for r in uses(t) if not room(g, r, t, at, who)])
+
+def state(g, t, at=None, who=None):
     if t["closed"]:
         return "closed"
+    if t["capacity"]:   # a resource: never work
+        return "free" if room(g, t["id"], {"id": None}, at, who) else "full"
     if holder(t, at):
         return "claimed"
-    if blockers(g, t):
+    if blockers(g, t, at, who):
         return "blocked"
     return "awaiting" if t["await"] else "ready"
 
@@ -177,6 +194,8 @@ def check(g, e):
             raise WeftError(f"no such task: {to}")
         if verb == "unlink" and (to not in t["needs"] if rel == "needs" else [rel, to] not in t["links"]):
             raise WeftError(f"{id} has no {rel} link to {to}")
+        if verb == "link" and rel == "uses" and not g[to]["capacity"]:
+            raise WeftError(f"{to} isn't a resource (give it a capacity)")
         if verb == "link" and rel == "needs" and id in upstream(g, to):            # rule 1
             raise WeftError(f"{id} needs {to} would make a cycle")
     elif verb == "claim":
@@ -188,9 +207,11 @@ def check(g, e):
         if holder(t, at) != who:                                                       # rule 2: renew, or claim a ready task
             if holder(t, at):
                 raise WeftError(f"{id} is claimed by {holder(t, at)} until {t['lease']['until']}")
-            if state(g, t, at) != "ready":
+            s = state(g, t, at, who)
+            if s not in ("ready", "free"):
                 why = {"closed": f"it's closed ({t['reason']})", "awaiting": "it's a gate: whoever can tell, closes it",
-                       "blocked": f"it's blocked by {' '.join(blockers(g, t))}"}[state(g, t, at)]
+                       "full": "it's full: " + ", ".join(f"{h['actor']} via {h['via']}" for h in holds(g, id, at)),
+                       "blocked": f"it's blocked by {' '.join(blockers(g, t, at, who))}"}[s]
                 raise WeftError(f"can't claim {id}: {why}")
     elif verb in ("release", "close"):
         if holder(t, at) and holder(t, at) != who and not (verb == "release" and body.get("force")):   # rule 3
@@ -214,7 +235,7 @@ def check(g, e):
             check_value(g, k, v)
 
 def check_fields(g, id, body):
-    for k in ("title", "await", "parent"):
+    for k in ("title", "await", "parent", "for"):
         if k in body and not isinstance(body[k], str):
             raise WeftError(f"{k} must be a string")
     if "refs" in body and not (isinstance(body["refs"], list) and all(isinstance(r, str) for r in body["refs"])):
@@ -223,6 +244,11 @@ def check_fields(g, id, body):
         raise WeftError("data must be a JSON object")
     if "parent" in body and (body["parent"] not in g or body["parent"] == id):
         raise WeftError(f"no such parent task: {body['parent']}")
+    if "capacity" in body and not (TYPES["integer"](body["capacity"]) and body["capacity"] >= 1):
+        raise WeftError("capacity must be a whole number, at least 1")
+    t = g.get(id) or {}
+    if body.get("capacity", t.get("capacity")) and body.get("await", t.get("await")):
+        raise WeftError("a task can't be both a resource (capacity) and a gate (await)")
 
 def check_comment(body):
     if not any(k in body for k in ("text", "data")):
@@ -287,8 +313,8 @@ class Local:
             for e in events:
                 if e["verb"] == "claim" and e["task"] is None and isinstance(e["body"].get("next"), dict):
                     f, at = e["body"].pop("next"), parse_ts(e["ts"])   # claim the oldest ready task, atomically
-                    e["task"] = next((id for id, t in g.items() if state(g, t, at) == "ready"
-                                      and fits(t, f.get("refs"), f.get("parent"))), None)
+                    e["task"] = next((id for id, t in g.items() if state(g, t, at, e["actor"]) == "ready"
+                                      and fits(t, f.get("refs"), f.get("parent")) and t["for"] in (None, e["actor"])), None)
                     if not e["task"]:
                         raise WeftError("nothing ready to claim")
                 check(g, e)
@@ -514,7 +540,10 @@ def summary(g, t):
     """One line: id, state, title, and whatever explains the state."""
     s, lease = state(g, t), t["lease"]
     extra = {"closed": t["reason"], "blocked": " ".join(blockers(g, t)), "awaiting": t["await"],
-             "claimed": lease and f"{lease['actor']} · {lease['status']}"}.get(s)
+             "claimed": lease and f"{lease['actor']} · {lease['status']}",
+             "full": ", ".join(f"{h['actor']} via {h['via']} until {h['until']}" for h in holds(g, t["id"]))}.get(s)
+    if t["for"]:
+        extra = " · ".join(filter(None, [extra, f"for {t['for']}"]))
     if s != "claimed" and lease and not t["closed"]:
         extra = " · ".join(filter(None, [extra, f"lapsed: {lease['actor']} · {lease['status']}, {ago(lease['until'])} ago"]))
     gates = [f"{x}: {g[x]['reason']}" for x in t["needs"] if g[x]["closed"] and g[x]["await"]]
@@ -526,7 +555,8 @@ def detail(g, t):
     return dict(t, state=state(g, t), children=children(g, t["id"]),
                 needed_by=[y for y in g if t["id"] in g[y]["needs"]],
                 linked_from=[[rel, y] for y in g for rel, to in g[y]["links"] if to == t["id"]],
-                gates={x: g[x]["reason"] for x in t["needs"] if g[x]["closed"]})
+                gates={x: g[x]["reason"] for x in t["needs"] if g[x]["closed"]},
+                **({"holders": holds(g, t["id"], lapsed=True), "load": len(holds(g, t["id"]))} if t["capacity"] else {}))
 
 def matcher(a):
     """A predicate on (graph, event) for `weft watch` filters, by position in the graph."""
@@ -552,11 +582,16 @@ session, your box, or someone's attention.
 TASK    id · title · refs (what it's about) · parent (its group) · data (JSON)
         · values (latest recorded: progress, spend_usd…) · await (makes it a
         GATE on the outside world; whoever sees it happen closes it)
+        · capacity (makes it a RESOURCE, e.g. a box; never work) · for (who
+        should do it; claim --next skips it for everyone else)
 EDGES   A needs B: A waits until B closes, for ANY reason (approved and no both
-        unblock A, so read B's reason). Any other relation is a label.
+        unblock A, so read B's reason). A uses R: while A is claimed it holds
+        one unit of R; claim R itself to hold it for a long job. Any other
+        relation is a label.
 STATES  closed (with a reason) · claimed (a live claim, lapsing after --ttl;
-        status working, waiting or stuck) · blocked (a need or child is open)
-        · awaiting (a gate) · ready (none of these: claim it)
+        status working, waiting or stuck) · blocked (a need or child is open,
+        or a resource it uses is full) · awaiting (a gate) · ready (none of
+        these: claim it) · a resource is free or full
 RULES   no cycles in needs · claim only ready tasks (or renew your own) ·
         only the holder can release or close a claimed task
 
@@ -611,11 +646,14 @@ def main(argv=None):
         c.add_argument("--refs", action="append", metavar="REF", help="what it's about: a doc, entity or URL (repeatable)")
         c.add_argument("--parent", metavar="TASK", help="group under TASK, which stays blocked until its children close")
         c.add_argument("--await", dest="await_", metavar="WHAT", help="make it a gate: ask:DOC#ID, cmd:SHELL, time:DATE")
+        c.add_argument("--capacity", type=int, metavar="N", help="make it a resource N claims can share; tasks `uses` it")
+        c.add_argument("--for", dest="for_", metavar="WHO", help="who should do it: an actor or role (claim --next skips it for others)")
         c.add_argument("--data", type=json_object, metavar="JSON", help="a JSON object merged into data")
     create.add_argument("--needs", action="append", default=[], metavar="TASK", help="a task this one needs (repeatable)")
 
     for name, verb in (("link", "add"), ("unlink", "remove")):
-        c = cmd(name, f"{verb} an edge. `T needs OTHER` blocks T until OTHER closes; any other REL is a label",
+        c = cmd(name, f"{verb} an edge. `T needs OTHER` blocks T until OTHER closes; `T uses R` holds resource R "
+                f"while T is claimed; any other REL is a label",
                 f"weft {name} t-3c4d5e spawned_from t-2b3c4d")
         c.add_argument("task"); c.add_argument("rel"); c.add_argument("to", metavar="other")
 
@@ -739,14 +777,14 @@ def run(a):
         lines += [f"  #{c['seq']} {c['actor']}: {c.get('text') or json.dumps(c.get('data'))}" for c in t["comments"][-5:]]
         return out(t, "\n".join(lines))
     if a.cmd in ("ready", "show"):
-        ts = [t for t in g.values() if a.cmd == "show" or (state(g, t) == "ready" and fits(t, a.refs, a.parent))]
+        ts = [t for t in g.values() if a.cmd == "show" or (state(g, t, who=me) == "ready" and fits(t, a.refs, a.parent))]
         return out([detail(g, t) for t in ts], "\n".join(summary(g, t) for t in ts))
 
     # everything else writes events
     id = getattr(a, "task", None) if a.cmd != "create" else (a.id or f"t-{secrets.token_hex(3)}")
     if a.cmd in ("create", "update"):
         body = {k: v for k, v in (("title", a.title), ("refs", a.refs), ("parent", a.parent),
-                                  ("await", a.await_), ("data", a.data)) if v is not None}
+                                  ("await", a.await_), ("capacity", a.capacity), ("for", a.for_), ("data", a.data)) if v is not None}
         events = [{"verb": a.cmd, "task": id, "body": body}]
         events += [{"verb": "link", "task": id, "body": {"rel": "needs", "to": n}} for n in getattr(a, "needs", [])]
     elif a.cmd in ("link", "unlink"):

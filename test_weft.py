@@ -89,6 +89,42 @@ class Rules(Base):
         self.assertNotIn("next", self.store.read()[-1]["body"])   # the log holds an ordinary claim
         self.assertRaisesRegex(WeftError, "nothing ready", nxt)
 
+    def test_resources_bound_what_can_run(self):
+        self.tasks("a", "b")
+        self.put(ev("create", "box", title="Box", capacity=1),
+                 ev("link", "a", rel="uses", to="box"), ev("link", "b", rel="uses", to="box"))
+        self.assertEqual((self.state("box"), self.state("a")), ("free", "ready"))
+        self.put(ev("claim", "a"), actor="ann")                          # claiming a holds box
+        self.assertEqual((self.state("box"), self.state("b")), ("full", "blocked"))
+        self.assertRaisesRegex(WeftError, "blocked by box", self.put, ev("claim", "b"), actor="bob")
+        self.assertRaisesRegex(WeftError, "nothing ready", self.put, ev("claim", None, next={}), actor="bob")
+        self.assertRaisesRegex(WeftError, "full: ann via a", self.put, ev("claim", "box"), actor="bob")
+        self.put(ev("claim", "a", ttl=60), actor="ann")                  # renewing is fine
+        self.put(ev("claim", "b"), actor="ann")                          # your own hold doesn't block you
+        with later(hours=2):                                             # a lapsed hold frees the box
+            self.assertEqual(self.state("box"), "free")
+            self.assertEqual(len(weft.detail(self.graph(), self.graph()["box"])["holders"]), 2)   # lapsed, still shown
+
+    def test_a_long_job_holds_a_resource_by_claiming_it(self):
+        self.tasks("a")
+        self.put(ev("create", "box", title="Box", capacity=1), ev("link", "a", rel="uses", to="box"))
+        self.put(ev("claim", "box", ttl=6 * 3600), actor="loop")
+        self.assertEqual((self.state("box"), self.state("a")), ("full", "blocked"))
+        self.assertRaisesRegex(WeftError, "claimed by loop", self.put, ev("claim", "box"), actor="bob")
+        self.assertEqual(self.put(ev("claim", None, next={}), actor="loop")[0]["task"], "a")
+        self.put(ev("release", "box"), actor="loop")
+        self.assertRaisesRegex(WeftError, "claimed by loop", self.put, ev("claim", "a"), actor="bob")
+
+    def test_resource_shapes_and_for(self):
+        self.tasks("a", "b")
+        self.assertRaisesRegex(WeftError, "isn't a resource", self.put, ev("link", "a", rel="uses", to="b"))
+        self.assertRaisesRegex(WeftError, "at least 1", self.put, ev("create", "r", title="R", capacity=0))
+        self.assertRaisesRegex(WeftError, "both a resource", self.put,
+                               ev("create", "r", title="R", capacity=1, **{"await": "ask:D1"}))
+        self.put(ev("update", "a", **{"for": "mike"}))
+        self.assertEqual(self.put(ev("claim", None, next={}), actor="bob")[0]["task"], "b")   # a is for mike
+        self.put(ev("claim", "a"), actor="bob")                                             # but anyone may pair
+
     def test_claim_next_never_collides(self):
         ids = [f"t{i}" for i in range(6)]
         self.tasks(*ids)
@@ -435,6 +471,22 @@ class Cli(unittest.TestCase):
         self.assertIn("nothing ready", self.fails("claim", "--next", "--refs", "E7"))
         self.assertEqual(self.run_("claim", "--next", "--refs", "E6", "-m", "on it"), "x\n")
         self.assertIn("ann: on it", self.run_("show", "x"))
+
+    def test_resources_on_the_cli(self):
+        self.run_("create", "The box", "--id", "box", "--capacity", "1")
+        self.run_("create", "Run it", "--id", "run")
+        self.run_("create", "Pilot", "--id", "pilot", "--for", "mike")
+        self.run_("link", "run", "uses", "box")
+        self.run_("claim", "box", "--ttl", "6h", "-m", "long loop")
+        os.environ["WEFT_ACTOR"] = "bob"
+        try:
+            self.assertIn("blocked   Run it  (box)", self.run_("show", "run"))
+            self.assertIn("claimed by ann", self.fails("claim", "box"))
+            self.assertIn("for mike", self.run_("ready"))
+            self.assertIn("nothing ready", self.fails("claim", "--next"))
+        finally:
+            os.environ["WEFT_ACTOR"] = "ann"
+        self.assertEqual(json.loads(self.run_("--json", "show", "box"))["holders"][0]["actor"], "ann")
 
     def test_init_refuses_a_second_store(self):
         self.assertIn("already has a store", self.fails("init"))

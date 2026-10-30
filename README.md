@@ -10,11 +10,15 @@ weft was made for **science**, which branches, gets reframed and goes quiet for 
 
 ## The model
 
-**Task:** `id` · `title` · `refs` (what it's about: docs, entities, URLs) · `parent` (grouping) · `data` (a JSON object, e.g. budgets) · `await` (makes it a gate) · `values` (the latest of whatever has been recorded against it)
+**Task:** `id` · `title` · `refs` (what it's about: docs, entities, URLs) · `parent` (grouping) · `data` (a JSON object, e.g. budgets) · `await` (makes it a gate) · `capacity` (makes it a resource) · `for` (who should do it) · `values` (the latest of whatever has been recorded against it)
 
-**Edges:** `A needs B` means A can't be ready until B is **closed, for any reason**. `approved` and `no` both unblock A, so read B's reason before acting on A. Any other relation (`spawned_from`, `supersedes`, `informs`) is a label.
+**Edges:** `A needs B` means A can't be ready until B is **closed, for any reason**. `approved` and `no` both unblock A, so read B's reason before acting on A. `A uses R` means A holds one unit of resource R while A is claimed. Any other relation (`spawned_from`, `supersedes`, `informs`) is a label.
 
 **Gates:** a task with `await` waits on something outside weft: a decision (`ask:DECISIONS.md#D4`), a long job (`cmd:test -f out/done`), a date (`time:2026-11-03`). **weft never checks it, and nobody claims it.** Whoever can tell it has happened closes it, and everything that needs it unblocks.
+
+**Resources:** a task with a `capacity` is a box, a GPU or a licence, never work. While its holds reach capacity, the tasks that use it are blocked, so `ready` and `claim --next` skip them. A long job holds a resource by claiming it (`weft claim gpu-box --ttl 6h -m "long loop"`) and renewing; if the job dies, the hold lapses. Your own hold never blocks you.
+
+**Work for people:** `--for mike` says who should do a task. `claim --next` skips it for everyone else, and `ready` labels it "for mike".
 
 **Groups:** a task with children (other tasks whose `parent` it is) is blocked until they're all closed, so a group is never mistaken for work.
 
@@ -24,9 +28,10 @@ weft was made for **science**, which branches, gets reframed and goes quiet for 
 |---|---|
 | `closed` | closed, with a reason: produced, abandoned, superseded, approved, no… |
 | `claimed` | someone holds a live claim: a lease that lapses after its TTL unless renewed. The holder reports a status: **working** · **waiting** (a short pause, back soon) · **stuck** (needs help) |
-| `blocked` | something it needs, or one of its children, isn't closed |
+| `blocked` | something it needs, or one of its children, isn't closed, or a resource it uses is full |
 | `awaiting` | a gate, waiting on the outside world |
 | `ready` | none of the above: claim it and do it |
+| `free` · `full` | a resource: whether it has room |
 
 A lapsed claim stays visible (`lapsed: ann · waiting, 2d ago`), so a job that died is never mistaken for work nobody started.
 
@@ -41,9 +46,9 @@ A lapsed claim stays visible (`lapsed: ann · waiting, 2d ago`), so a job that d
 |---|---|
 | `weft ready` | tasks you could claim now (with the reasons their gates closed) |
 | `weft show [T]` | one task in detail (state, needs, children, gates, what points at it, recent comments), or all |
-| `weft create "title" [--needs T] [--refs R] [--parent T] [--await W] [--data JSON] [--id ID]` | a new task (prints its id) |
+| `weft create "title" [--needs T] [--refs R] [--parent T] [--await W] [--capacity N] [--for WHO] [--data JSON] [--id ID]` | a new task (prints its id) |
 | `weft update T [--title …] [--refs …] [--parent …] [--await …] [--data …]` | change fields (`data` merges) |
-| `weft link T needs U` · `weft unlink T needs U` | add or remove an edge (any other rel is a label) |
+| `weft link T needs U` · `weft link T uses R` · `weft unlink …` | add or remove an edge (any other rel is a label) |
 | `weft claim T [--ttl 2h] [--status working\|waiting\|stuck] [-m "…"]` | take a ready task, or renew yours and say how it's going |
 | `weft claim --next [--refs R] [--parent G]` | take the oldest ready task, atomically: workers fanning out never collide |
 | `weft record T NAME=VALUE …` | record values: progress, spend, tokens… (see below) |
