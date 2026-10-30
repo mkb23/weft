@@ -547,7 +547,7 @@ def summary(g, t):
              "full": ", ".join(f"{h['actor']} via {h['via']} until {h['until']}" for h in holds(g, t["id"]))}.get(s)
     if t["for"]:
         extra = " · ".join(filter(None, [extra, f"for {t['for']}"]))
-    if s != "claimed" and lease and not t["closed"]:
+    if lease and not holder(t) and not t["closed"]:
         extra = " · ".join(filter(None, [extra, f"lapsed: {lease['actor']} · {lease['status']}, {ago(lease['until'])} ago"]))
     gates = [f"{x}: {g[x]['reason']}" for x in t["needs"] if g[x]["closed"] and g[x]["await"]]
     extra = " · ".join(filter(None, [extra] + gates))

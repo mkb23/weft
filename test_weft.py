@@ -485,6 +485,7 @@ class Cli(unittest.TestCase):
         try:
             self.assertIn("blocked   Run it  (box)", self.run_("show", "run"))
             self.assertIn("claimed by ann", self.fails("claim", "box"))
+            self.assertNotIn("lapsed", self.run_("show", "box"))   # a live hold isn't lapsed
             self.assertIn("for mike", self.run_("ready"))
             self.assertIn("nothing ready", self.fails("claim", "--next"))
         finally:
