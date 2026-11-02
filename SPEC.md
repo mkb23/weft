@@ -43,7 +43,7 @@ Every event has the same shape:
 | `refs` | Strings naming what the task is about: documents, entities, URLs. weft never interprets them |
 | `parent` | Another task's id. **A parent is blocked until its children are closed**, so a group is never claimable work |
 | `capacity` | A whole number ≥ 1 that makes the task a **resource**: a box, a GPU, a licence. Tasks that `uses` it hold one unit each while claimed; claiming the resource itself is an explicit hold, for long jobs with no task claim. A resource is never work: `ready` and `claim --next` never offer it |
-| `for` | Who should do the task: an actor or a role. `claim --next` skips it for anyone else, and `ready` labels it. A plain `claim` still works, so a person can pair with an agent |
+| `for` | Who should do the task: an actor or a role. `claim --next` skips it for anyone else, and `ready` labels it. A plain `claim` still works, so a person can pair with an agent. An empty string clears it |
 | `await` | An opaque string that makes the task a **gate**, a wait on the world (`ask:docs/DECISIONS.md#D4`, `cmd:test -f out/done`, `time:2026-11-03`). **weft never evaluates it.** Whoever can tell, closes it. A gate can't be claimed |
 | `data` | A JSON object, e.g. `{"budget": {"spend_usd": 20}}` |
 

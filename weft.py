@@ -62,6 +62,7 @@ def apply(g, e):
         t = g[e["task"]] = blank(e["task"])
     if verb in ("create", "update"):
         t.update({k: body[k] for k in ("title", "refs", "parent", "await", "capacity", "for") if k in body})
+        t["for"] = t["for"] or None   # --for "" hands it back to everyone
         t["data"].update(body.get("data", {}))
     elif verb in ("link", "unlink"):
         edges, edge = (t["needs"], body["to"]) if body["rel"] == "needs" else (t["links"], [body["rel"], body["to"]])
@@ -650,7 +651,7 @@ def main(argv=None):
         c.add_argument("--parent", metavar="TASK", help="group under TASK, which stays blocked until its children close")
         c.add_argument("--await", dest="await_", metavar="WHAT", help="make it a gate: ask:DOC#ID, cmd:SHELL, time:DATE")
         c.add_argument("--capacity", type=int, metavar="N", help="make it a resource N claims can share; tasks `uses` it")
-        c.add_argument("--for", dest="for_", metavar="WHO", help="who should do it: an actor or role (claim --next skips it for others)")
+        c.add_argument("--for", dest="for_", metavar="WHO", help="who should do it: an actor or role (claim --next skips it for others; \"\" clears it)")
         c.add_argument("--data", type=json_object, metavar="JSON", help="a JSON object merged into data")
     create.add_argument("--needs", action="append", default=[], metavar="TASK", help="a task this one needs (repeatable)")
 

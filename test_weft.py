@@ -124,6 +124,8 @@ class Rules(Base):
         self.put(ev("update", "a", **{"for": "mike"}))
         self.assertEqual(self.put(ev("claim", None, next={}), actor="bob")[0]["task"], "b")   # a is for mike
         self.put(ev("claim", "a"), actor="bob")                                             # but anyone may pair
+        self.put(ev("release", "a"), ev("release", "b"), ev("update", "a", **{"for": ""}), actor="bob")
+        self.assertEqual(self.put(ev("claim", None, next={}), actor="cat")[0]["task"], "a")   # "" clears it
 
     def test_claim_next_never_collides(self):
         ids = [f"t{i}" for i in range(6)]
